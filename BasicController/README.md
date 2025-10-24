@@ -43,4 +43,4 @@ We are currently working on using the ODrive experimental anticogging function t
 
 When we are ready to move into controlling the motor, the link to the ODrive documentation for controls can be found at: https://docs.odriverobotics.com/v/latest/manual/control.html
 
-
+The ODrive can be controlled using can_runner.py via CLI or GUI/mainGUI.py via GUI.
