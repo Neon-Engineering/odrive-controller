@@ -1464,7 +1464,7 @@ class HighPerformanceODriveSystem:
         """Load ODrive configuration from JSON file"""
         import os
         import json
-        from can_simple_utils import CanSimpleNode
+        from utils.can_simple_utils import CanSimpleNode
         
         try:
             # Check if config file exists
@@ -1492,7 +1492,7 @@ class HighPerformanceODriveSystem:
             print(f"📡 Found {len(config_data)} configuration parameters")
             
             # Create EndpointAccess for config loading
-            from can_restore_config import EndpointAccess, restore_config
+            from utils.can_restore_config import EndpointAccess, restore_config
             
             # # Use the existing CAN manager's node
             # with CanSimpleNode(bus=self.can_manager.bus, node_id=self.node_id) as config_node:
@@ -1614,7 +1614,7 @@ class HighPerformanceODriveSystem:
     async def _save_config_to_odrive(self):
         """Save current configuration to ODrive NVM and reboot"""
         try:
-            from can_simple_utils import CanSimpleNode, REBOOT_ACTION_SAVE
+            from utils.can_simple_utils import CanSimpleNode, REBOOT_ACTION_SAVE
             
             print("💾 Saving configuration to ODrive NVM...")
             
