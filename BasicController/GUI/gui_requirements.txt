@@ -1,0 +1,6 @@
+# ODrive GUI Requirements
+# Install with: pip install -r gui_requirements.txt
+
+PyQt5>=5.15.0
+qasync>=0.23.0
+matplotlib>=3.5.0
