@@ -1,0 +1,57 @@
+JTLA_SingleMotor_control_voxsm:
+	These scripts were used to gain a deeper understanding of how the variousaspects of the control
+	system work, and to experiment with features/functions before implementing them into the main
+	control algorithm
+
+	v03sm:
+		-Allows user to increase/decrease motor position
+		-Includes an ABORT button to exit closed loop control
+		-Includes a button to clear any active errors on controller
+		-Uses color stylings on pushbuttons and slider
+
+	v04sm:
+		-Experimenting with assigning motor parameters through Can
+
+ 
+__________________________________________________________________________________________________________
+JTLA_FullControl_v0xsm:
+	These scripts follow the development of the control algorithm used for the traveling JTLA unit.
+	These were generated in preparation for handing the travel unit over, and provide full
+	functionality of the JTLA.
+
+	v11sm:
+		-Full actuator functionality (live plots commmanded/actual pos, manual & sine behaviors)
+
+	v12sm:
+		-Same as v11sm but tries to implement error reading and handling (not working)
+
+	v13sm:
+		-Save-as from v11sm, not v12sm
+		-Implemented function to exit closed loop control (reference methodology used in
+		 	JTLA_SingleMotor_control_vo4sm)
+		-Implemented button/slider styling (reference JTLA_SingleMotor_control_vo4sm)
+
+	v14sm:
+		-Implemented LVDT outputs (IN WORK but not working yet)
+
+	v15sm:
+		-Save-as from v13sm
+		-Added another push button to record data and export to CSV
+		-Added safety check to exit closed loop (3x) if tip travel limit is exceeded
+
+	v16sm: 
+		-Save as from v15sm
+		-Added LVDT reading functionality!
+			-Global function to read LVDT voltage
+			-Timer in ControlPanel class to call function
+			-Exits closed loop control if voltage exceeds limit
+			-Need to update to read position, not voltage
+			-Also need update to fully abort rest of program
+
+	v17sm: (IN WORK)
+		-Save as from v16sm
+		-Added LVDT scaling and offset
+		-Added motor 3 counter-retract during motor 1 homing
+
+
+

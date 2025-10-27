@@ -1,0 +1,7 @@
+matplotlib
+numpy
+python-can
+
+# for gui
+pyqt5
+pyqtgraph
