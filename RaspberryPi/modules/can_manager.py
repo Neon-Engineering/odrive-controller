@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
-from can_simple_utils import CanSimpleNode
+from utils.can_simple_utils import CanSimpleNode
 import os
 import platform
 
