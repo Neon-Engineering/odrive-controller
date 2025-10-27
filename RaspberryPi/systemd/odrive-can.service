@@ -5,9 +5,11 @@ Wants=can0-setup.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/OneDrive\ -\ Re\ Build/Documents/projects/ODrive\ Controller/odrive-controller/RaspberryPi
-# Adjust ExecStart to the correct python and path on the RPi (use venv python if used)
-ExecStart=/usr/bin/env python3 can_runner.py
+User=neonaero
+WorkingDirectory=/home/neonaero/Documents/odrive-controller/odrive-controller-odrive-rpi/RaspberryPi
+# Use the virtualenv python binary and absolute path to the script
+ExecStart=/home/neonaero/Documents/odrive-controller/myenv/bin/python3 /home/neonaero/Documents/odrive-controller/odrive-controller-odrive-rpi/RaspberryPi/can_runner.py
+Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 # After the service stops, ensure the CAN interface is taken down.
 ExecStopPost=/sbin/ip link set can0 down || true
