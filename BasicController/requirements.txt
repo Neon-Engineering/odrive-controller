@@ -1,0 +1,8 @@
+# for odrivetool
+odrive
+pyusb
+libusb
+python-can[gs-usb]
+matplotlib
+pandas
+numpy
