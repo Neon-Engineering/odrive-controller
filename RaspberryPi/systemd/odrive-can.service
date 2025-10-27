@@ -1,0 +1,17 @@
+[Unit]
+Description=ODrive can_runner service (starts the controller and tears down can0 on stop)
+After=can0-setup.service
+Wants=can0-setup.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/OneDrive\ -\ Re\ Build/Documents/projects/ODrive\ Controller/odrive-controller/RaspberryPi
+# Adjust ExecStart to the correct python and path on the RPi (use venv python if used)
+ExecStart=/usr/bin/env python3 can_runner.py
+Restart=on-failure
+# After the service stops, ensure the CAN interface is taken down.
+ExecStopPost=/sbin/ip link set can0 down || true
+TimeoutStartSec=10
+
+[Install]
+WantedBy=multi-user.target
