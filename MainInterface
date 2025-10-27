@@ -1,253 +1,151 @@
-import sys							
-import time								
-import math								
+#!/usr/bin/env python3
+import argparse
+import time
 import struct
-from typing import Optional		
-from PyQt5 import QtWidgets, QtCore					
-import can								
-from collections import deque
+import can
 
-#import module components
-from RaspberryPi.GUI.setupGUI import ControlPanel
-from RaspberryPi.modules.SingleAxisController import Controls
-from RaspberryPi.modules.SingleAxisController import send_position, request_position, enter_closed_loop, exit_closed_loop
-from RaspberryPi.modules.SensorReadout import Logger
+# ---------- ODrive CAN message IDs ----------
+def _id(node, code): return (node << 5) | code
+ID_HEARTBEAT       = 0x01
+ID_SET_AXIS_STATE  = 0x07
+ID_GET_ENCODER     = 0x09
+ID_SET_INPUT_POS   = 0x0C
+ID_CLEAR_ERRORS    = 0x18
+ID_OD_WRITE        = 0x17
 
-class App(QtWidgets.QMainWindow):			
-    def __init__(self):					
-        super().__init__()				
-        self.setWindowTitle("Raspberry Pi Control Interface")	
-        self.setGeometry(100, 100, 800, 600)	
+AXIS_IDLE          = 1
+AXIS_CLOSED_LOOP   = 8
 
-        # Initialize CAN bus
-        self.bus = can.interface.Bus(channel='can0', bustype='socketcan')
+# ---------- Bus ----------
+def make_bus(channel="can0", interface="socketcan"):
+    return can.interface.Bus(channel=channel, interface=interface)
 
-        # Initialize components
-        self.control_panel = ControlPanel(self)
-        self.setCentralWidget(self.control_panel)
+# ---------- Core helpers (unchanged behavior) ----------
+def send_pos(bus, node_id, pos_target, velocity_ff=0, torque_ff=0):
+    data = struct.pack('<fhh', float(pos_target), int(velocity_ff), int(torque_ff))
+    msg = can.Message(arbitration_id=_id(node_id, ID_SET_INPUT_POS),
+                      data=data, is_extended_id=False)
+    bus.send(msg)
 
-        self.axis_controller = Controls(self.bus)
-        self.sensor_logger = Logger(self.bus)
+def request_pos(bus, node_id, timeout_s=0.010):
+    rid = _id(node_id, ID_GET_ENCODER)
+    # RTR request
+    bus.send(can.Message(arbitration_id=rid, data=b'',
+                         is_extended_id=False, is_remote_frame=True))
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        msg = bus.recv(timeout=timeout_s)
+        if msg and msg.arbitration_id == rid and not msg.is_remote_frame and len(msg.data) >= 8:
+            pos, vel = struct.unpack('<ff', msg.data[:8])
+            return pos, vel
+    return None, None
 
-        # Setup timers for periodic updates
-        self.update_timer = QtCore.QTimer()
-        self.update_timer.timeout.connect(self.update_status)
-        self.update_timer.start(100)  # Update every 100 ms
+def enter_closed_loop(bus, node_id, wait=True, timeout_s=2.0):
+    bus.send(can.Message(arbitration_id=_id(node_id, ID_SET_AXIS_STATE),
+                         data=struct.pack('<I', AXIS_CLOSED_LOOP), is_extended_id=False))
+    if not wait:
+        return True
+    hb = _id(node_id, ID_HEARTBEAT)
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        msg = bus.recv(timeout=0.05)
+        if msg and msg.arbitration_id == hb and len(msg.data) >= 7:
+            _, axis_state, _, _ = struct.unpack('<IBBB', msg.data[:7])
+            if axis_state == AXIS_CLOSED_LOOP:
+                return True
+    return False
 
-    def update_status(self):
-        # Update control panel with current status
-        status = self.axis_controller.get_status()
-        self.control_panel.update_status_display(status)
+def exit_closed_loop(bus, node_id):
+    bus.send(can.Message(arbitration_id=_id(node_id, ID_SET_AXIS_STATE),
+                         data=struct.pack('<I', AXIS_IDLE), is_extended_id=False))
 
-        # Log sensor data
-        sensor_data = self.sensor_logger.read_sensors()
-        self.sensor_logger.log_data(sensor_data)
+def clear_errors(bus, node_id):
+    bus.send(can.Message(arbitration_id=_id(node_id, ID_CLEAR_ERRORS),
+                         data=b'', is_extended_id=False))
 
-    def closeEvent(self, event):
-        # Clean up resources on close
-        self.axis_controller.shutdown()
-        self.sensor_logger.close()
-        event.accept()
+def write_float_parameter(bus, node_id, index, value, subindex=0x00):
+    # SDO Write for 32-bit float = 0x2B
+    data = struct.pack('<BHBBf', 0x2B, index, subindex, 0x00, float(value))
+    msg = can.Message(arbitration_id=_id(node_id, ID_OD_WRITE),
+                      data=data[:8], is_extended_id=False)
+    bus.send(msg)
 
-    def run(self):
-        self.show()						
-        sys.exit(App.exec_())
-        control_panel.addWidget(btn)
-        self.motor_buttons.append(btn)
-        self.update_button_color(btn.isChecked(), i)
-    
-    def update_button_color(self, checked, index):
-        btn = self.motor_buttons[index]
-        if checked:
-            btn.setStyleSheet("background-color: green; color: white; font-size: 18px;")
-        else:
-            btn.setStyleSheet("background-color: red; color: white; font-size: 18px;")
-# Function to start the homing sequence
-    def start_homing_sequence(self):
-        self.status_box.setText("Homing motors...")
-        self.homing_thread = HomingThread(self.motor_nodes)
-        self.homing_thread.homing_done.connect(self.finish_homing_sequence)
-        self.homing_thread.start()
+# ---------- CLI actions ----------
+def cmd_status(bus, nid):
+    pos, vel = request_pos(bus, nid)
+    if pos is None:
+        print("No encoder response.")
+    else:
+        print(f"Pos: {pos:.3f} turns  |  Vel: {vel:.3f} tr/s")
 
-    # Function to save home offsets and enable command/plotting timers
-    def finish_homing_sequence(self, offsets):
-        self.home_offsets = offsets                         # Save home offsets in control panel class
-        self.status_box.setText("Manual control active.")   # Status box
-        self.setEnabled(True)                               # Enable GUI after homing finishes
-        self.cmd_timer.start(50)                            # Start timer to update commanded motor positions
-        self.plot_timer.start(50)                           # Start timer to update plot
+def cmd_up(bus, nid, step, vel_ff):
+    pos, _ = request_pos(bus, nid)
+    if pos is None:
+        print("No encoder response.")
+        return
+    target = pos + step
+    send_pos(bus, nid, target, vel_ff=vel_ff)
+    print(f"Move UP: {pos:.3f} → {target:.3f} turns (vel_ff={vel_ff})")
 
-    # Function to calculate motor position targets and send commands
-    def update_command(self):
-        if self.send_button.isChecked():
-            motor_states = [int(btn.isChecked()) for btn in self.motor_buttons]
-            motor_active = sum(motor_states)
+def cmd_down(bus, nid, step, vel_ff):
+    pos, _ = request_pos(bus, nid)
+    if pos is None:
+        print("No encoder response.")
+        return
+    target = pos - step
+    send_pos(bus, nid, target, vel_ff=-vel_ff)
+    print(f"Move DOWN: {pos:.3f} → {target:.3f} turns (vel_ff={-vel_ff})")
 
-            if self.behavior_buttons[0].isChecked():
-                act_length_target = self.slider.value() / 100.0 - 2.0		# Fix this with the other slider values that are way too big
-                self.last_cmd = act_length_target
-            elif self.behavior_buttons[1].isChecked():
-                if not self.sine_sweep_active:
-                    self.sine_start_time = time.time()
-                    self.sine_sweep_active = True
-                t = time.time() - self.sine_start_time
-                freq = self.slider.value() / 150.0
-                amp = 2.0													# Amplitude of sine wave
-                act_length_target = amp * math.sin(2 * math.pi * freq * t)
-                self.last_cmd = act_length_target
-            else:
-                act_length_target = 0.0
+def cmd_goto(bus, nid, pos, vel_ff):
+    send_pos(bus, nid, pos, vel_ff=vel_ff)
+    print(f"GOTO: {pos:.3f} turns (vel_ff={vel_ff})")
 
-            if motor_active > 0:
-                act_contribute = act_length_target / motor_active										# Equal stroke contributions
-                self.rev_targets = [
-                    self.home_offsets[0] - motor_states[0] * act_contribute / Pitch_12,					# Motor 1 target position
-                    self.home_offsets[1] - motor_states[1] * act_contribute / (Pitch_12 + Pitch_23),	# Motor 2 target position
-                    self.home_offsets[2] + motor_states[2] * act_contribute / Pitch_23,	]				# Motor 3 target position
-                for i in range(3):
-                    send_position(self.rev_targets[i], self.motor_nodes[i])
-        else:
-            self.sine_sweep_active = False
+# ---------- Main ----------
+def main():
+    p = argparse.ArgumentParser(description="ODrive CAN command-line controller")
+    p.add_argument("--channel", default="can0", help="socketcan channel (default: can0)")
+    p.add_argument("--interface", default="socketcan", help="python-can interface (default: socketcan)")
+    p.add_argument("--node", type=int, default=1, help="ODrive node id (default: 1)")
+    sub = p.add_subparsers(dest="cmd", required=True)
 
-        for i, node_id in enumerate(self.motor_nodes):
-            pos = request_position(node_id)
-            if pos is not None:
-                self.last_fb[i] = pos
-                
-    # Function to update the live plot
-    def update_plot(self):
-        t = time.time() - self.start_time
-        self.time_vals.append(t)
-        self.cmd_vals.append(self.last_cmd)
+    sub.add_parser("enable", help="enter closed loop")
+    sub.add_parser("disable", help="exit to IDLE")
+    sub.add_parser("clear", help="clear errors")
+    sub.add_parser("status", help="read position/velocity")
 
-        rel_fb = [
-            self.last_fb[0] - self.home_offsets[0],
-        ]
-        
-        actual_length = (
-            rel_fb[0]
-        ) * (-1)
-        self.fb_vals[0].append(actual_length)
+    up = sub.add_parser("up", help="increment position by +step turns")
+    up.add_argument("--step", type=float, default=1.0)
+    up.add_argument("--vel-ff", type=int, default=0)
 
-        # HEALTH CHECK: Check travel limits
-        if abs(actual_length) > self.travel_lim:
-            for node in [0, 1, 2]:	
-                exit_closed_loop(node)
-            self.status_box.setText("ABORT: Travel limit exceeded")
-            print(f"ABORT: Travel limit exceeded")
+    down = sub.add_parser("down", help="decrement position by -step turns")
+    down.add_argument("--step", type=float, default=1.0)
+    down.add_argument("--vel-ff", type=int, default=0)
 
-        # DATA ACQUISITION
-        if self.record_button.isChecked():	# Store data only when record button is pressed
-            self.data_log.append([t, self.rev_targets[0], rel_fb[0], self.rev_targets[1], rel_fb[1], self.rev_targets[2], rel_fb[2], actual_length ])		# Append time and motor positions in array
+    goto = sub.add_parser("goto", help="move to absolute position (turns)")
+    goto.add_argument("pos", type=float)
+    goto.add_argument("--vel-ff", type=int, default=0)
 
-        # Update plot
-        self.cmd_curve.setData(self.time_vals, self.cmd_vals)
-        self.fb_curve.setData(self.time_vals, self.fb_vals[0])
-        self.plot.setXRange(max(0, t - self.history_sec), t)
+    args = p.parse_args()
+    bus = make_bus(args.channel, args.interface)
+    nid = args.node
 
-    # Function to handle styling of activate button
-    def handle_send_toggled(self, checked):
-        if not checked:
-            self.send_button.setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-            self.sine_sweep_active = False
-        else:
-            self.send_button.setStyleSheet("""QPushButton {background-color: green; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
+    if args.cmd == "enable":
+        ok = enter_closed_loop(bus, nid, wait=True)
+        print("Closed loop" if ok else "Failed to enter closed loop")
+    elif args.cmd == "disable":
+        exit_closed_loop(bus, nid)
+        print("Set axis to IDLE")
+    elif args.cmd == "clear":
+        clear_errors(bus, nid)
+        print("Errors cleared")
+    elif args.cmd == "status":
+        cmd_status(bus, nid)
+    elif args.cmd == "up":
+        cmd_up(bus, nid, args.step, args.vel_ff)
+    elif args.cmd == "down":
+        cmd_down(bus, nid, args.step, args.vel_ff)
+    elif args.cmd == "goto":
+        cmd_goto(bus, nid, args.pos, args.vel_ff)
 
-    # Function to handle RECORD button and CSV creation
-    def handle_record_toggled(self, checked):
-        if not checked:
-            self.record_button.setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-            # Create CSV to store data
-            time_stamp = time.strftime("%Y%m%d-%H%M%S")	# Format time stamp: year|month|day-hour|minute|second
-            file_name = f"TestData_{time_stamp}.csv"	# Create full CSV file name
-            with open(file_name, mode='w', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow(['Time','M1 Target','M1 Pos','M2 Target','M2 Pos','M3 Target','M3 Pos','Act Length'])
-                writer.writerows(self.data_log)
-            self.data_log = []	# Reset array
-        else:
-            self.record_button.setStyleSheet("""QPushButton { background-color: green; color: white; font-weight: bold; border-radius: 5px; padding: 10px; }""")
-            
-    # Function to send motors home
-    def handle_home(self):
-        self.send_button.setChecked(False)
-        self.sine_sweep_active = False
-        self.last_cmd = 0.0
-        self.rev_targets = [0.0, 0.0, 0.0]
-        for i in range(3):
-            send_position(self.home_offsets[i], self.motor_nodes[i])
-    
-    def handle_reset(self):
-        self.send_button.setChecked(False)
-        self.sine_sweep_active = False
-        self.last_cmd = 0.0
-        self.rev_targets = [0.0]  # Update for plot
-        for i in range(3):
-            exit_closed_loop(i)
-            enter_closed_loop(i)
-        for i in range(3):
-            send_position(self.home_offsets[i], self.motor_nodes[i])
-
-    # Function to update label above slider
-    def update_slider_label(self):
-        if self.behavior_buttons[0].isChecked():
-            value = self.slider.value() / 100.0 - 2.0
-            self.slider_label.setText(f"Position: {value:.2f}")
-        elif self.behavior_buttons[1].isChecked():
-            value = self.slider.value() / 150.0
-            self.slider_label.setText(f"Frequency: {value:.2f} Hz")
-    
-    # Function to handle what happens when you switch behaviors
-    def handle_behavior_toggle(self):
-        self.send_button.setChecked(False)
-        if self.behavior_buttons[0].isChecked():
-            self.slider.setMinimum(0)
-            self.slider.setMaximum(400)
-            self.slider.setValue(200)
-            self.slider_label.setText("Position: 0.00")
-            self.behavior_buttons[0].setStyleSheet("""QPushButton {background-color: green; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-            self.behavior_buttons[1].setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        elif self.behavior_buttons[1].isChecked():
-            self.slider.setMinimum(0)
-            self.slider.setMaximum(300)
-            self.slider.setValue(100)
-            self.slider_label.setText("Frequency: 1.00 Hz")
-            self.behavior_buttons[0].setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-            self.behavior_buttons[1].setStyleSheet("""QPushButton {background-color: green; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")  
-        
-    # Function to update the color of (some) latching pushbuttons
-    def update_button_color(self):
-        # Motor 1 formatting
-        if self.motor_buttons[0].isChecked():
-            self.motor_buttons[0].setStyleSheet("""QPushButton {background-color: green; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        else:
-            self.motor_buttons[0].setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        # Motor 2 formatting
-        if self.motor_buttons[1].isChecked():
-            self.motor_buttons[1].setStyleSheet("""QPushButton {background-color: green; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        else:
-            self.motor_buttons[1].setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        # Motor 3 formatting
-        if self.motor_buttons[2].isChecked():
-            self.motor_buttons[2].setStyleSheet("""QPushButton {background-color: green; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        else:
-            self.motor_buttons[2].setStyleSheet("""QPushButton {background-color: darkred; color: white; font-weight: bold; font-size: 20px; border-radius: 5px; padding: 10px; }""")
-        pass
-        
-    # Function to perform shut down and exit application
-    def exit_application(self):
-        if self.homing_thread and self.homing_thread.isRunning():
-            self.homing_thread.interrupted = True
-            self.homing_thread.wait()
-            
-        print(f"Shutting down")
-        
-        print(f"Disabling closed loop control")
-        for node in [0]:
-            exit_closed_loop(node)	# Exit closed loop control
-        QtWidgets.QApplication.quit()
-    
-    # Function to exit if esc key is pressed
-    def keyPressEvent(self, event):
-        if event.key() == QtCore.Qt.Key_Escape:
-            self.exit_application()
+if __name__ == "__main__":
+    main()
