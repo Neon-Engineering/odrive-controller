@@ -24,3 +24,66 @@ The generic single-axis controller is based on the JTLA control program.
  - modules directory stores modular functions and programs which can be added/removed from main feature
  - utils directory stores useful utilities and libraries that make tasks more understandable and readable
 
+SocketCAN / Raspberry Pi Quick Setup
+-----------------------------------
+
+This repository contains a Raspberry Pi targeted copy of the BasicController code which defaults to using SocketCAN on Linux (talks to `can0`).
+
+1) Install OS packages on the Pi:
+
+```bash
+sudo apt update
+sudo apt install -y python3-pip python3-venv can-utils git
+```
+
+2) Create and activate a Python virtualenv (recommended) and install Python dependencies:
+
+```bash
+cd RaspberryPi
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+3) Configure and bring up `can0` (example for 500k bitrate):
+
+```bash
+# If using MCP2515 HAT, ensure dtoverlay is present in /boot/config.txt and SPI is enabled.
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 500000
+sudo ip link set can0 up
+ip -details link show can0
+```
+
+4) Quick functional test with can-utils:
+
+```bash
+sudo candump can0
+cansend can0 123#1122334455667788   # note: do NOT use the 0x prefix for the CAN id
+```
+
+5) Running the controller:
+
+```bash
+# run from RaspberryPi/ with virtualenv active
+python3 can_runner.py
+# or to force GS-USB backend (if you have a USB CAN adapter):
+export ODRIVE_CAN_BACKEND=gs_usb
+python3 can_runner.py
+```
+
+6) Running from Thonny and permissions
+
+- Thonny can run the code, but raw CAN sockets typically require elevated privileges. Options:
+	- Run Thonny with sudo (not recommended generally): `sudo thonny`
+	- Grant the python3 binary network capabilities so it can open raw sockets without sudo:
+
+```bash
+sudo setcap 'cap_net_raw,cap_net_admin+eip' $(which python3)
+```
+
+	- Or run the controller from a terminal with sudo: `sudo python3 can_runner.py` (recommended for quick tests).
+
+If you want, I can add a small smoke-test script under `RaspberryPi/tests/` that sends a frame and displays received frames; tell me and I will add it.
+
