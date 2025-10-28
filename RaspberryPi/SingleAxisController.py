@@ -7,14 +7,7 @@ from typing import Optional							# Used for converting between Python values an
 import can								# Provides interfaces for sending/receiving CAN messages
 from collections import deque			# Double-ended queue, great for maintaining rolling buffer (ex. real-time plot)
 
-# Define constant variables ----------
-Pitch_12 = 0.157			# 4mm ball screw pitch
-Home_HS_Offset = 3.9		# Travel distance from hard stop to home position
-node_id_act = 1				# Node id for active motor
-index_PosGain = 0x2030		# Hex index for controller.config.pos_gain
-index_VelGain = 0x2031		# Hex index for controller.config.vel_gain
-index_VelIntGain = 0x2032	# Hex index for controller.config.vel_integrator_gain
-index_Bandwidth = 0x2023	# Hex index for controller.config.input_filter_bandwidth
+
 
 # -----------------------------
 # ODrive axis state constants

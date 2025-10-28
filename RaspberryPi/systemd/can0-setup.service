@@ -1,0 +1,24 @@
+[Unit]
+Description=Bring up SocketCAN interface %i (can0)
+Documentation=man:ip(8)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Interface and bitrate are configurable via Environment variables below.
+Environment=IFACE=can0 BITRATE=500000
+# Ensure interface is down first (ignore failure)
+ExecStart=/sbin/ip link set ${IFACE} down || true
+# Configure type and bitrate (requires CAP_NET_ADMIN / sudo)
+ExecStart=/bin/sh -c '/sbin/ip link set ${IFACE} type can bitrate ${BITRATE}'
+# Bring interface up
+ExecStart=/sbin/ip link set ${IFACE} up
+# On stop, bring the interface down
+ExecStop=/sbin/ip link set ${IFACE} down
+TimeoutStartSec=20
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

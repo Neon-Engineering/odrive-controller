@@ -1,0 +1,703 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Actuator Configuration GUI (PyQt5)
+
+- Presents all configuration fields at once (no step-by-step wizard).
+- Preserves original dataclass models and JSON format.
+- Validates inputs and computes effective velocity limit live.
+- Save / Load JSON config files compatible with the CLI module.
+
+Requires: PyQt5 (pip install PyQt5)
+"""
+
+import json
+import os
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Any, Tuple
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+    QGroupBox, QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QCheckBox,
+    QPushButton, QFileDialog, QLabel, QMessageBox, QTabWidget, QScrollArea
+)
+
+
+# =========================
+# Data Models (unchanged)
+# =========================
+
+@dataclass
+class MotorConfig:
+    """Motor-specific configuration parameters"""
+    node_id: int = 0                        # ODrive CAN node ID (0-63)
+    pole_pairs: int = 7                     # Number of motor pole pairs
+    torque_constant: float = 0.0            # Kt [Nm/A] - leave 0 for auto
+    velocity_constant: float = 0.0          # Kv [RPM/V] - leave 0 for auto
+    current_limit: float = 10.0             # Motor current limit [A]
+    velocity_limit: float = 10.0            # Motor velocity limit [rev/s]
+    encoder_cpr: int = 8192                 # Encoder counts per revolution
+
+
+@dataclass
+class LoadEncoderConfig:
+    """Load-side encoder configuration (optional external encoder)"""
+    enabled: bool = False                   # Use external load encoder
+    encoder_type: str = "none"              # "lvdt", "quadrature", "absolute", "none"
+    counts_per_unit: float = 0.0            # Encoder counts per physical unit
+    # LVDT-specific parameters (if encoder_type == "lvdt")
+    lvdt_v1: float = 0.0                    # Calibration voltage 1 [V]
+    lvdt_x1: float = 0.0                    # Calibration position 1 [units]
+    lvdt_v2: float = 0.0                    # Calibration voltage 2 [V]
+    lvdt_x2: float = 0.0                    # Calibration position 2 [units]
+    lvdt_offset: float = 0.0                # Position offset [units]
+
+
+@dataclass
+class ActuatorConfig:
+    """Complete actuator system configuration"""
+
+    # === System identification ===
+    name: str = "Generic Actuator"
+    description: str = ""
+
+    # === Actuator type and units ===
+    actuator_type: str = "linear"           # "linear" or "rotary"
+    units: str = "inches"                   # "inches", "mm" (linear), "degrees" (rotary)
+
+    # === Mechanical configuration ===
+    overall_ratio: float = 0.2              # Physical units per motor revolution
+                                            # Linear: pitch [in/rev] or [mm/rev]
+                                            # Rotary: gear_ratio * 360 [deg/rev]
+
+    # === Position limits (in physical units) ===
+    position_min: float = -2.5              # Minimum position [units]
+    position_max: float = 2.5               # Maximum position [units]
+
+    # === Velocity limits ===
+    velocity_limit_physical: float = 1.0    # Max velocity in physical units/sec
+
+    # === Homing configuration (optional - not needed for absolute encoders) ===
+    homing_required: bool = True            # Whether homing is required
+    homing_direction: int = 1               # 1 = positive, -1 = negative
+    homing_velocity: float = 0.5            # Homing speed [physical units/sec]
+    homing_backoff: float = 0.5             # Distance to back off from hardstop [units]
+    homing_threshold: float = 0.05          # Velocity threshold for hardstop detection [rev/s]
+    home_position: float = 0.0              # Logical home position [units]
+
+    # === Sub-configurations ===
+    motor: MotorConfig = field(default_factory=MotorConfig)
+    load_encoder: LoadEncoderConfig = field(default_factory=LoadEncoderConfig)
+
+    def validate(self) -> Tuple[bool, str]:
+        if self.actuator_type not in ["linear", "rotary"]:
+            return False, f"Invalid actuator_type: {self.actuator_type}. Must be 'linear' or 'rotary'."
+
+        valid_units = {"linear": ["inches", "mm"], "rotary": ["degrees"]}
+        if self.units not in valid_units[self.actuator_type]:
+            return False, f"Invalid units '{self.units}' for {self.actuator_type} actuator. Must be {valid_units[self.actuator_type]}."
+
+        if self.overall_ratio <= 0:
+            return False, f"overall_ratio must be positive, got {self.overall_ratio}"
+
+        if self.position_min >= self.position_max:
+            return False, f"position_min ({self.position_min}) must be less than position_max ({self.position_max})"
+
+        if self.velocity_limit_physical <= 0:
+            return False, f"velocity_limit_physical must be positive, got {self.velocity_limit_physical}"
+
+        if not (0 <= self.motor.node_id <= 63):
+            return False, f"motor.node_id must be 0-63, got {self.motor.node_id}"
+
+        if self.motor.pole_pairs <= 0:
+            return False, f"motor.pole_pairs must be positive, got {self.motor.pole_pairs}"
+
+        if self.motor.current_limit <= 0:
+            return False, f"motor.current_limit must be positive, got {self.motor.current_limit}"
+
+        if self.motor.velocity_limit <= 0:
+            return False, f"motor.velocity_limit must be positive, got {self.motor.velocity_limit}"
+
+        if self.motor.encoder_cpr <= 0:
+            return False, f"motor.encoder_cpr must be positive, got {self.motor.encoder_cpr}"
+
+        if self.homing_required:
+            if self.homing_direction not in [-1, 1]:
+                return False, f"homing_direction must be 1 or -1, got {self.homing_direction}"
+            if self.homing_velocity <= 0:
+                return False, f"homing_velocity must be positive, got {self.homing_velocity}"
+            if self.homing_backoff < 0:
+                return False, f"homing_backoff must be non-negative, got {self.homing_backoff}"
+
+        if self.load_encoder.enabled:
+            valid_encoder_types = ["lvdt", "quadrature", "absolute", "none"]
+            if self.load_encoder.encoder_type not in valid_encoder_types:
+                return False, f"load_encoder.encoder_type must be one of {valid_encoder_types}"
+            if self.load_encoder.encoder_type == "lvdt":
+                if self.load_encoder.lvdt_v1 == self.load_encoder.lvdt_v2:
+                    return False, "LVDT calibration voltages (lvdt_v1, lvdt_v2) must be different"
+
+        return True, "Configuration is valid"
+
+    def get_effective_velocity_limit(self) -> float:
+        motor_limit_physical = self.motor.velocity_limit * self.overall_ratio
+        return min(self.velocity_limit_physical, motor_limit_physical)
+
+    def physical_to_motor_revs(self, physical_position: float, home_offset: float = 0.0) -> float:
+        return home_offset + (physical_position - self.home_position) / self.overall_ratio
+
+    def motor_revs_to_physical(self, motor_position: float, home_offset: float = 0.0) -> float:
+        return self.home_position + (motor_position - home_offset) * self.overall_ratio
+
+    def save_config(self, filepath: str) -> None:
+        config_dict = asdict(self)
+        with open(filepath, 'w') as f:
+            json.dump(config_dict, f, indent=4)
+
+    @classmethod
+    def load_config(cls, filepath: str) -> 'ActuatorConfig':
+        with open(filepath, 'r') as f:
+            config_dict = json.load(f)
+        motor_config = MotorConfig(**config_dict.pop('motor'))
+        load_encoder_config = LoadEncoderConfig(**config_dict.pop('load_encoder'))
+        config = cls(**config_dict)
+        config.motor = motor_config
+        config.load_encoder = load_encoder_config
+        return config
+
+    def get_config_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# =========================
+# GUI
+# =========================
+
+class ActuatorConfigGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Actuator Configuration Manager (PyQt5)")
+        self.setMinimumSize(900, 700)
+
+        self.config = ActuatorConfig()
+
+        # Central widget with scroll (so all fields visible & clickable at any time)
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer_layout = QVBoxLayout(central)
+
+        # Tabs for structure: System, Mechanical & Limits, Motor, Load Encoder, Homing, Tools
+        self.tabs = QTabWidget()
+        outer_layout.addWidget(self.tabs)
+
+        # Summary / footer bar
+        footer = QHBoxLayout()
+        outer_layout.addLayout(footer)
+
+        self.validate_btn = QPushButton("Validate")
+        self.validate_btn.clicked.connect(self.on_validate)
+        self.save_btn = QPushButton("Save...")
+        self.save_btn.clicked.connect(self.on_save)
+        self.load_btn = QPushButton("Load...")
+        self.load_btn.clicked.connect(self.on_load)
+
+        self.effective_label = QLabel("Effective velocity: —")
+        self.effective_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+        footer.addWidget(self.validate_btn)
+        footer.addWidget(self.save_btn)
+        footer.addWidget(self.load_btn)
+        footer.addStretch()
+        footer.addWidget(self.effective_label)
+
+        # Build all tabs
+        self._build_system_tab()
+        self._build_mech_limits_tab()
+        self._build_motor_tab()
+        self._build_load_encoder_tab()
+        self._build_homing_tab()
+        self._build_tools_tab()
+
+        # Initial UI sync
+        self._connect_live_updates()
+        self._update_units_options()
+        self._update_load_encoder_fields()
+        self._update_homing_visibility()
+        self._update_effective_velocity_label()
+
+    # ---------- Tab builders ----------
+
+    def _build_system_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # Scrollable form
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        inner = QWidget()
+        scroll.setWidget(inner)
+        form_layout = QFormLayout(inner)
+
+        self.name_edit = QLineEdit(self.config.name)
+        self.desc_edit = QLineEdit(self.config.description)
+
+        self.actuator_type_combo = QComboBox()
+        self.actuator_type_combo.addItems(["linear", "rotary"])
+        self.actuator_type_combo.setCurrentText(self.config.actuator_type)
+
+        self.units_combo = QComboBox()
+        # items will be populated based on actuator type
+
+        form_layout.addRow("Name:", self.name_edit)
+        form_layout.addRow("Description:", self.desc_edit)
+        form_layout.addRow("Actuator type:", self.actuator_type_combo)
+        form_layout.addRow("Units:", self.units_combo)
+
+        self.tabs.addTab(w, "System")
+
+    def _build_mech_limits_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        mech = QGroupBox("Mechanical")
+        mech_form = QFormLayout(mech)
+        self.overall_ratio_spin = QDoubleSpinBox()
+        self.overall_ratio_spin.setDecimals(6)
+        self.overall_ratio_spin.setRange(1e-6, 1e9)
+        self.overall_ratio_spin.setValue(self.config.overall_ratio)
+        mech_form.addRow("Overall ratio (units / motor rev):", self.overall_ratio_spin)
+
+        limits = QGroupBox("Position & Velocity Limits")
+        limits_form = QFormLayout(limits)
+        self.position_min_spin = QDoubleSpinBox()
+        self.position_min_spin.setRange(-1e9, 1e9)
+        self.position_min_spin.setDecimals(6)
+        self.position_min_spin.setValue(self.config.position_min)
+
+        self.position_max_spin = QDoubleSpinBox()
+        self.position_max_spin.setRange(-1e9, 1e9)
+        self.position_max_spin.setDecimals(6)
+        self.position_max_spin.setValue(self.config.position_max)
+
+        self.velocity_limit_phys_spin = QDoubleSpinBox()
+        self.velocity_limit_phys_spin.setRange(1e-9, 1e9)
+        self.velocity_limit_phys_spin.setDecimals(6)
+        self.velocity_limit_phys_spin.setValue(self.config.velocity_limit_physical)
+
+        limits_form.addRow("Position min (units):", self.position_min_spin)
+        limits_form.addRow("Position max (units):", self.position_max_spin)
+        limits_form.addRow("Velocity limit (units/s):", self.velocity_limit_phys_spin)
+
+        v.addWidget(mech)
+        v.addWidget(limits)
+        v.addStretch()
+        self.tabs.addTab(w, "Mechanical & Limits")
+
+    def _build_motor_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        motor = QGroupBox("Motor Configuration")
+        f = QFormLayout(motor)
+
+        self.node_id_spin = QSpinBox()
+        self.node_id_spin.setRange(0, 63)
+        self.node_id_spin.setValue(self.config.motor.node_id)
+
+        self.pole_pairs_spin = QSpinBox()
+        self.pole_pairs_spin.setRange(1, 1000000)
+        self.pole_pairs_spin.setValue(self.config.motor.pole_pairs)
+
+        self.torque_const_spin = QDoubleSpinBox()
+        self.torque_const_spin.setRange(0.0, 1e6)
+        self.torque_const_spin.setDecimals(6)
+        self.torque_const_spin.setValue(self.config.motor.torque_constant)
+
+        self.velocity_const_spin = QDoubleSpinBox()
+        self.velocity_const_spin.setRange(0.0, 1e9)
+        self.velocity_const_spin.setDecimals(6)
+        self.velocity_const_spin.setValue(self.config.motor.velocity_constant)
+
+        self.current_limit_spin = QDoubleSpinBox()
+        self.current_limit_spin.setRange(1e-9, 1e6)
+        self.current_limit_spin.setDecimals(6)
+        self.current_limit_spin.setValue(self.config.motor.current_limit)
+
+        self.motor_vel_limit_spin = QDoubleSpinBox()
+        self.motor_vel_limit_spin.setRange(1e-9, 1e9)
+        self.motor_vel_limit_spin.setDecimals(6)
+        self.motor_vel_limit_spin.setValue(self.config.motor.velocity_limit)
+
+        self.encoder_cpr_spin = QSpinBox()
+        self.encoder_cpr_spin.setRange(1, 10**9)
+        self.encoder_cpr_spin.setValue(self.config.motor.encoder_cpr)
+
+        f.addRow("ODrive CAN node ID:", self.node_id_spin)
+        f.addRow("Pole pairs:", self.pole_pairs_spin)
+        f.addRow("Torque constant Kt [Nm/A] (0 for auto):", self.torque_const_spin)
+        f.addRow("Velocity constant Kv [RPM/V] (0 for auto):", self.velocity_const_spin)
+        f.addRow("Current limit [A]:", self.current_limit_spin)
+        f.addRow("Motor velocity limit [rev/s]:", self.motor_vel_limit_spin)
+        f.addRow("Encoder CPR:", self.encoder_cpr_spin)
+
+        v.addWidget(motor)
+        v.addStretch()
+        self.tabs.addTab(w, "Motor")
+
+    def _build_load_encoder_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        le = QGroupBox("Load Encoder (Optional)")
+        f = QFormLayout(le)
+
+        self.le_enabled_chk = QCheckBox("Enabled")
+        self.le_enabled_chk.setChecked(self.config.load_encoder.enabled)
+
+        self.le_type_combo = QComboBox()
+        self.le_type_combo.addItems(["none", "lvdt", "quadrature", "absolute"])
+        self.le_type_combo.setCurrentText(self.config.load_encoder.encoder_type)
+
+        self.le_counts_per_unit = QDoubleSpinBox()
+        self.le_counts_per_unit.setRange(0.0, 1e12)
+        self.le_counts_per_unit.setDecimals(6)
+        self.le_counts_per_unit.setValue(self.config.load_encoder.counts_per_unit)
+
+        # LVDT fields
+        self.lvdt_v1 = QDoubleSpinBox(); self.lvdt_v1.setRange(-1e6, 1e6); self.lvdt_v1.setDecimals(6); self.lvdt_v1.setValue(self.config.load_encoder.lvdt_v1)
+        self.lvdt_x1 = QDoubleSpinBox(); self.lvdt_x1.setRange(-1e9, 1e9); self.lvdt_x1.setDecimals(6); self.lvdt_x1.setValue(self.config.load_encoder.lvdt_x1)
+        self.lvdt_v2 = QDoubleSpinBox(); self.lvdt_v2.setRange(-1e6, 1e6); self.lvdt_v2.setDecimals(6); self.lvdt_v2.setValue(self.config.load_encoder.lvdt_v2)
+        self.lvdt_x2 = QDoubleSpinBox(); self.lvdt_x2.setRange(-1e9, 1e9); self.lvdt_x2.setDecimals(6); self.lvdt_x2.setValue(self.config.load_encoder.lvdt_x2)
+        self.lvdt_offset = QDoubleSpinBox(); self.lvdt_offset.setRange(-1e9, 1e9); self.lvdt_offset.setDecimals(6); self.lvdt_offset.setValue(self.config.load_encoder.lvdt_offset)
+
+        f.addRow(self.le_enabled_chk)
+        f.addRow("Encoder type:", self.le_type_combo)
+        f.addRow("Counts per unit (if applicable):", self.le_counts_per_unit)
+        f.addRow(QLabel("LVDT calibration (only if type = lvdt):"))
+        f.addRow("  Voltage 1 [V]:", self.lvdt_v1)
+        f.addRow("  Position 1 [units]:", self.lvdt_x1)
+        f.addRow("  Voltage 2 [V]:", self.lvdt_v2)
+        f.addRow("  Position 2 [units]:", self.lvdt_x2)
+        f.addRow("  Position offset [units]:", self.lvdt_offset)
+
+        v.addWidget(le)
+        v.addStretch()
+        self.tabs.addTab(w, "Load Encoder")
+
+    def _build_homing_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        group = QGroupBox("Homing Configuration")
+        f = QFormLayout(group)
+
+        self.homing_required_chk = QCheckBox("Homing required")
+        self.homing_required_chk.setChecked(self.config.homing_required)
+
+        self.homing_direction_combo = QComboBox()
+        self.homing_direction_combo.addItems(["1", "-1"])
+        self.homing_direction_combo.setCurrentText(str(self.config.homing_direction))
+
+        self.homing_velocity_spin = QDoubleSpinBox()
+        self.homing_velocity_spin.setRange(1e-9, 1e9)
+        self.homing_velocity_spin.setDecimals(6)
+        self.homing_velocity_spin.setValue(self.config.homing_velocity)
+
+        self.homing_backoff_spin = QDoubleSpinBox()
+        self.homing_backoff_spin.setRange(0.0, 1e9)
+        self.homing_backoff_spin.setDecimals(6)
+        self.homing_backoff_spin.setValue(self.config.homing_backoff)
+
+        self.homing_threshold_spin = QDoubleSpinBox()
+        self.homing_threshold_spin.setRange(1e-9, 1e9)
+        self.homing_threshold_spin.setDecimals(6)
+        self.homing_threshold_spin.setValue(self.config.homing_threshold)
+
+        self.home_position_spin = QDoubleSpinBox()
+        self.home_position_spin.setRange(-1e9, 1e9)
+        self.home_position_spin.setDecimals(6)
+        self.home_position_spin.setValue(self.config.home_position)
+
+        f.addRow(self.homing_required_chk)
+        f.addRow("Homing direction (1 or -1):", self.homing_direction_combo)
+        f.addRow("Homing velocity (units/s):", self.homing_velocity_spin)
+        f.addRow("Backoff distance (units):", self.homing_backoff_spin)
+        f.addRow("Hardstop detect threshold [rev/s]:", self.homing_threshold_spin)
+        f.addRow("Logical home position (units):", self.home_position_spin)
+
+        v.addWidget(group)
+        v.addStretch()
+        self.tabs.addTab(w, "Homing")
+
+    def _build_tools_tab(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+
+        # Quick converters
+        conv = QGroupBox("Quick Converters")
+        f = QFormLayout(conv)
+
+        self.qc_physical = QDoubleSpinBox(); self.qc_physical.setRange(-1e9, 1e9); self.qc_physical.setDecimals(6)
+        self.qc_home_offset = QDoubleSpinBox(); self.qc_home_offset.setRange(-1e9, 1e9); self.qc_home_offset.setDecimals(6)
+        self.qc_motor_out = QLabel("—")
+
+        self.qc_motor_in = QDoubleSpinBox(); self.qc_motor_in.setRange(-1e12, 1e12); self.qc_motor_in.setDecimals(6)
+        self.qc_home_offset2 = QDoubleSpinBox(); self.qc_home_offset2.setRange(-1e9, 1e9); self.qc_home_offset2.setDecimals(6)
+        self.qc_physical_out = QLabel("—")
+
+        btn1 = QPushButton("Physical → Motor revs")
+        btn1.clicked.connect(self.do_physical_to_motor)
+        btn2 = QPushButton("Motor revs → Physical")
+        btn2.clicked.connect(self.do_motor_to_physical)
+
+        f.addRow(QLabel("Physical → Motor"))
+        f.addRow("Physical position (units):", self.qc_physical)
+        f.addRow("Home offset (motor revs):", self.qc_home_offset)
+        f.addRow(btn1, self.qc_motor_out)
+
+        f.addRow(QLabel(""))
+        f.addRow(QLabel("Motor → Physical"))
+        f.addRow("Motor position (revs):", self.qc_motor_in)
+        f.addRow("Home offset (motor revs):", self.qc_home_offset2)
+        f.addRow(btn2, self.qc_physical_out)
+
+        v.addWidget(conv)
+        v.addStretch()
+        self.tabs.addTab(w, "Tools")
+
+    # ---------- Live updates and helpers ----------
+
+    def _connect_live_updates(self):
+        # System
+        self.actuator_type_combo.currentTextChanged.connect(self._update_units_options)
+        self.units_combo.currentTextChanged.connect(self._update_effective_velocity_label)
+        self.name_edit.textChanged.connect(lambda _: None)  # placeholder to keep symmetry
+
+        # Mechanical & limits inputs affecting effective velocity
+        self.overall_ratio_spin.valueChanged.connect(self._update_effective_velocity_label)
+        self.velocity_limit_phys_spin.valueChanged.connect(self._update_effective_velocity_label)
+        self.motor_vel_limit_spin.valueChanged.connect(self._update_effective_velocity_label)
+
+        # Load encoder visibility logic
+        self.le_enabled_chk.toggled.connect(self._update_load_encoder_fields)
+        self.le_type_combo.currentTextChanged.connect(self._update_load_encoder_fields)
+
+        # Homing visibility logic
+        self.homing_required_chk.toggled.connect(self._update_homing_visibility)
+
+    def _update_units_options(self):
+        atype = self.actuator_type_combo.currentText()
+        self.units_combo.blockSignals(True)
+        self.units_combo.clear()
+        if atype == "linear":
+            self.units_combo.addItems(["inches", "mm"])
+        else:
+            self.units_combo.addItems(["degrees"])
+        # preserve current config.units if compatible, else pick default
+        current_units = self.config.units
+        if current_units in [self.units_combo.itemText(i) for i in range(self.units_combo.count())]:
+            self.units_combo.setCurrentText(current_units)
+        self.units_combo.blockSignals(False)
+        self._update_effective_velocity_label()
+
+    def _update_load_encoder_fields(self):
+        enabled = self.le_enabled_chk.isChecked()
+        le_type = self.le_type_combo.currentText()
+
+        self.le_type_combo.setEnabled(enabled)
+        self.le_counts_per_unit.setEnabled(enabled)
+
+        lvdt_fields = [self.lvdt_v1, self.lvdt_x1, self.lvdt_v2, self.lvdt_x2, self.lvdt_offset]
+        lvdt_on = enabled and (le_type == "lvdt")
+        for w in lvdt_fields:
+            w.setEnabled(lvdt_on)
+
+    def _update_homing_visibility(self):
+        # If using absolute position (load encoder enabled and type in ["lvdt", "absolute"]),
+        # user may choose to disable homing. Otherwise homing is forced ON.
+        absolute_possible = self.le_enabled_chk.isChecked() and self.le_type_combo.currentText() in ["lvdt", "absolute"]
+        if not absolute_possible:
+            self.homing_required_chk.setChecked(True)
+            self.homing_required_chk.setEnabled(False)
+        else:
+            self.homing_required_chk.setEnabled(True)
+
+        # Enable/disable the rest by homing_required state
+        on = self.homing_required_chk.isChecked()
+        for w in [self.homing_direction_combo, self.homing_velocity_spin, self.homing_backoff_spin,
+                  self.homing_threshold_spin, self.home_position_spin]:
+            w.setEnabled(on)
+
+    def _update_effective_velocity_label(self):
+        cfg = self._collect_config_from_ui()
+        eff = cfg.get_effective_velocity_limit()
+        # Show which constraint is active
+        motor_limit_physical = cfg.motor.velocity_limit * cfg.overall_ratio
+        reason = "motor limit" if motor_limit_physical <= cfg.velocity_limit_physical else "physical limit"
+        self.effective_label.setText(f"Effective velocity: {eff:.6f} {cfg.units}/s  (limited by {reason})")
+
+    def _collect_config_from_ui(self) -> ActuatorConfig:
+        cfg = ActuatorConfig()
+        # System
+        cfg.name = self.name_edit.text().strip() or "Generic Actuator"
+        cfg.description = self.desc_edit.text().strip()
+        cfg.actuator_type = self.actuator_type_combo.currentText()
+        cfg.units = self.units_combo.currentText()
+
+        # Mechanical & limits
+        cfg.overall_ratio = float(self.overall_ratio_spin.value())
+        cfg.position_min = float(self.position_min_spin.value())
+        cfg.position_max = float(self.position_max_spin.value())
+        cfg.velocity_limit_physical = float(self.velocity_limit_phys_spin.value())
+
+        # Motor
+        m = MotorConfig()
+        m.node_id = int(self.node_id_spin.value())
+        m.pole_pairs = int(self.pole_pairs_spin.value())
+        m.torque_constant = float(self.torque_const_spin.value())
+        m.velocity_constant = float(self.velocity_const_spin.value())
+        m.current_limit = float(self.current_limit_spin.value())
+        m.velocity_limit = float(self.motor_vel_limit_spin.value())
+        m.encoder_cpr = int(self.encoder_cpr_spin.value())
+        cfg.motor = m
+
+        # Load encoder
+        le = LoadEncoderConfig()
+        le.enabled = self.le_enabled_chk.isChecked()
+        le.encoder_type = self.le_type_combo.currentText()
+        le.counts_per_unit = float(self.le_counts_per_unit.value())
+        le.lvdt_v1 = float(self.lvdt_v1.value())
+        le.lvdt_x1 = float(self.lvdt_x1.value())
+        le.lvdt_v2 = float(self.lvdt_v2.value())
+        le.lvdt_x2 = float(self.lvdt_x2.value())
+        le.lvdt_offset = float(self.lvdt_offset.value())
+        cfg.load_encoder = le
+
+        # Homing
+        cfg.homing_required = self.homing_required_chk.isChecked()
+        cfg.homing_direction = int(self.homing_direction_combo.currentText())
+        cfg.homing_velocity = float(self.homing_velocity_spin.value())
+        cfg.homing_backoff = float(self.homing_backoff_spin.value())
+        cfg.homing_threshold = float(self.homing_threshold_spin.value())
+        cfg.home_position = float(self.home_position_spin.value())
+
+        return cfg
+
+    def _apply_config_to_ui(self, cfg: ActuatorConfig):
+        # System
+        self.name_edit.setText(cfg.name)
+        self.desc_edit.setText(cfg.description)
+        self.actuator_type_combo.setCurrentText(cfg.actuator_type)
+        self._update_units_options()
+        self.units_combo.setCurrentText(cfg.units)
+
+        # Mechanical & limits
+        self.overall_ratio_spin.setValue(cfg.overall_ratio)
+        self.position_min_spin.setValue(cfg.position_min)
+        self.position_max_spin.setValue(cfg.position_max)
+        self.velocity_limit_phys_spin.setValue(cfg.velocity_limit_physical)
+
+        # Motor
+        self.node_id_spin.setValue(cfg.motor.node_id)
+        self.pole_pairs_spin.setValue(cfg.motor.pole_pairs)
+        self.torque_const_spin.setValue(cfg.motor.torque_constant)
+        self.velocity_const_spin.setValue(cfg.motor.velocity_constant)
+        self.current_limit_spin.setValue(cfg.motor.current_limit)
+        self.motor_vel_limit_spin.setValue(cfg.motor.velocity_limit)
+        self.encoder_cpr_spin.setValue(cfg.motor.encoder_cpr)
+
+        # Load encoder
+        self.le_enabled_chk.setChecked(cfg.load_encoder.enabled)
+        self.le_type_combo.setCurrentText(cfg.load_encoder.encoder_type)
+        self.le_counts_per_unit.setValue(cfg.load_encoder.counts_per_unit)
+        self.lvdt_v1.setValue(cfg.load_encoder.lvdt_v1)
+        self.lvdt_x1.setValue(cfg.load_encoder.lvdt_x1)
+        self.lvdt_v2.setValue(cfg.load_encoder.lvdt_v2)
+        self.lvdt_x2.setValue(cfg.load_encoder.lvdt_x2)
+        self.lvdt_offset.setValue(cfg.load_encoder.lvdt_offset)
+        self._update_load_encoder_fields()
+
+        # Homing
+        self.homing_required_chk.setChecked(cfg.homing_required)
+        self.homing_direction_combo.setCurrentText(str(cfg.homing_direction))
+        self.homing_velocity_spin.setValue(cfg.homing_velocity)
+        self.homing_backoff_spin.setValue(cfg.homing_backoff)
+        self.homing_threshold_spin.setValue(cfg.homing_threshold)
+        self.home_position_spin.setValue(cfg.home_position)
+        self._update_homing_visibility()
+
+        self._update_effective_velocity_label()
+
+    # ---------- Converters ----------
+
+    def do_physical_to_motor(self):
+        cfg = self._collect_config_from_ui()
+        motor = cfg.physical_to_motor_revs(self.qc_physical.value(), self.qc_home_offset.value())
+        self.qc_motor_out.setText(f"{motor:.6f} revs")
+
+    def do_motor_to_physical(self):
+        cfg = self._collect_config_from_ui()
+        phys = cfg.motor_revs_to_physical(self.qc_motor_in.value(), self.qc_home_offset2.value())
+        self.qc_physical_out.setText(f"{phys:.6f} {cfg.units}")
+
+    # ---------- Actions: Validate / Save / Load ----------
+
+    def on_validate(self):
+        cfg = self._collect_config_from_ui()
+        ok, msg = cfg.validate()
+        if ok:
+            QMessageBox.information(self, "Validation", f"✓ {msg}")
+        else:
+            QMessageBox.warning(self, "Validation Error", f"✗ {msg}")
+
+    def on_save(self):
+        cfg = self._collect_config_from_ui()
+        ok, msg = cfg.validate()
+        if not ok:
+            if QMessageBox.question(
+                self, "Validation Warning",
+                f"Validation failed:\n\n{msg}\n\nSave anyway?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            ) != QMessageBox.Yes:
+                return
+
+        default_name = cfg.name.lower().replace(" ", "_") + "_config.json"
+        path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", default_name, "JSON (*.json)")
+        if not path:
+            return
+        try:
+            cfg.save_config(path)
+            QMessageBox.information(self, "Saved", f"✓ Configuration saved to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save:\n{e}")
+
+    def on_load(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load Configuration", "", "JSON (*.json)")
+        if not path:
+            return
+        if not os.path.exists(path):
+            QMessageBox.warning(self, "Load Error", f"File not found:\n{path}")
+            return
+        try:
+            cfg = ActuatorConfig.load_config(path)
+            ok, msg = cfg.validate()
+            # Show validation result but still load so user can see/fix
+            QMessageBox.information(self, "Loaded", f"File loaded.\nValidation: {msg}")
+            self.config = cfg
+            self._apply_config_to_ui(cfg)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load:\n{e}")
+
+
+def main():
+    import sys
+    app = QApplication(sys.argv)
+    win = ActuatorConfigGUI()
+    win.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
