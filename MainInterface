@@ -16,6 +16,10 @@ ID_OD_WRITE        = 0x17
 AXIS_IDLE          = 1
 AXIS_CLOSED_LOOP   = 8
 
+import RaspberryPi.utils.can_setup as can_setup
+
+node_id = 0
+
 # ---------- Bus ----------
 def make_bus(channel="can0", interface="socketcan"):
     return can.interface.Bus(channel=channel, interface=interface)
