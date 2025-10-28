@@ -1,15 +1,19 @@
 [Unit]
 Description=ODrive can_runner service (starts the controller and tears down can0 on stop)
-After=can0-setup.service
-Wants=can0-setup.service
+After=network.target
 
 [Service]
 Type=simple
 User=neonaero
 WorkingDirectory=/home/neonaero/Documents/odrive-controller/odrive-controller-odrive-rpi/RaspberryPi
-# Use the virtualenv python binary and absolute path to the script
+# Bring up can0 only while this service runs. Use ExecStartPre to configure
+# the interface and ExecStopPost to tear it down. BITRATE can be overridden
+# via an Environment= variable if desired.
+Environment=PYTHONUNBUFFERED=1 BITRATE=500000 IFACE=can0
+ExecStartPre=/sbin/ip link set ${IFACE} down || true
+ExecStartPre=/bin/sh -c '/sbin/ip link set ${IFACE} type can bitrate ${BITRATE}'
+ExecStartPre=/sbin/ip link set ${IFACE} up
 ExecStart=/home/neonaero/Documents/odrive-controller/myenv/bin/python3 /home/neonaero/Documents/odrive-controller/odrive-controller-odrive-rpi/RaspberryPi/can_runner.py
-Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 # After the service stops, ensure the CAN interface is taken down.
 ExecStopPost=/sbin/ip link set can0 down || true
