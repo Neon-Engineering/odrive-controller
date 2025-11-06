@@ -2,7 +2,7 @@ import usb.core
 import usb.backend.libusb1
 
 def find_libusb_backend():
-    backend = usb.backend.libusb1.get_backend(find_library=lambda x: ".\\.venv-1\\Lib\\site-packages\\libusb\\_platform\\_windows\\x64\\libusb-1.0.dll")
+    backend = usb.backend.libusb1.get_backend(find_library=lambda x: ".\\.venv\\Lib\\site-packages\\libusb\\_platform\\_windows\\x64\\libusb-1.0.dll")
     if backend:
         print("libusb backend found at the specified path.")
     else:

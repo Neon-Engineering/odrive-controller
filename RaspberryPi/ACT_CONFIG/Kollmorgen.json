@@ -1,0 +1,35 @@
+{
+    "name": "Kollmorgen 0502DC",
+    "description": "BLDC motor actuator",
+    "actuator_type": "rotary",
+    "units": "degrees",
+    "overall_ratio": 1.0,
+    "position_min": -2.5,
+    "position_max": 2.5,
+    "velocity_limit_physical": 1.0,
+    "homing_required": false,
+    "homing_direction": 1,
+    "homing_velocity": 0.5,
+    "homing_backoff": 0.5,
+    "homing_threshold": 0.05,
+    "home_position": 0.0,
+    "motor": {
+        "node_id": 0,
+        "pole_pairs": 17,
+        "torque_constant": 0.0,
+        "velocity_constant": 0.0,
+        "current_limit": 10.0,
+        "velocity_limit": 10.0,
+        "encoder_cpr": 8192
+    },
+    "load_encoder": {
+        "enabled": false,
+        "encoder_type": "none",
+        "counts_per_unit": 0.0,
+        "lvdt_v1": 0.0,
+        "lvdt_x1": 0.0,
+        "lvdt_v2": 0.0,
+        "lvdt_x2": 0.0,
+        "lvdt_offset": 0.0
+    }
+}
