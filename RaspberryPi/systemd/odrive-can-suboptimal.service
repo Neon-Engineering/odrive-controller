@@ -10,10 +10,7 @@ WorkingDirectory=/home/neonaero/Documents/odrive-controller/odrive-controller-od
 # Bring up can0 only while this service runs. Use ExecStartPre to configure
 # the interface and ExecStopPost to tear it down. BITRATE can be overridden
 # via an Environment= variable if desired.
-ExecStartPre=/sbin/ip link set can0 type can bitrate 1000000
-ExecStartPre=/sbin/ip link set can0 up
-ExecStart=/home/neonaero/Documents/odrive-controller/myenv/bin/python can_runner.py
-ExecStopPost=/sbin/ip link set can0 down
+ExecStart=/bin/bash -c 'sleep 5; source /home/neonaero/Documents/odrive-controller/myenv/bin/activate; python3 can_runner.py'
 Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
