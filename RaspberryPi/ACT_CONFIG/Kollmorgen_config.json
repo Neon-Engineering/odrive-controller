@@ -1,40 +1,67 @@
 {
-    odrv = odrv0
-odrv.config.dc_bus_overvoltage_trip_level = 50
-odrv.config.dc_bus_undervoltage_trip_level = 10.5
-odrv.config.dc_max_positive_current = math.inf
-odrv.config.dc_max_negative_current = -math.inf
-odrv.axis0.config.motor.motor_type = MotorType.PMSM_CURRENT_CONTROL
-odrv.axis0.config.motor.pole_pairs = 7
-odrv.axis0.config.motor.torque_constant = 0.049237913788997376
-odrv.axis0.config.motor.current_soft_max = 3
-odrv.axis0.config.motor.current_hard_max = 13.9
-odrv.axis0.config.motor.calibration_current = 12
-odrv.axis0.config.motor.resistance_calib_max_voltage = 2
-odrv.axis0.config.calibration_lockin.current = 2
-odrv.axis0.motor.motor_thermistor.config.enabled = False
-odrv.axis0.controller.config.control_mode = ControlMode.VELOCITY_CONTROL
-odrv.axis0.controller.config.input_mode = InputMode.VEL_RAMP
-odrv.axis0.controller.config.vel_limit = 10
-odrv.axis0.controller.config.vel_limit_tolerance = 1.2
-odrv.axis0.config.torque_soft_min = -math.inf
-odrv.axis0.config.torque_soft_max = math.inf
-odrv.axis0.trap_traj.config.accel_limit = 2
-odrv.axis0.controller.config.vel_ramp_rate = 2
-odrv.can.config.protocol = Protocol.SIMPLE
-odrv.can.config.baud_rate = 0
-odrv.axis0.config.can.node_id = 63
-odrv.axis0.config.can.heartbeat_msg_rate_ms = 100
-odrv.axis0.config.can.encoder_msg_rate_ms = 0
-odrv.axis0.config.can.iq_msg_rate_ms = 0
-odrv.axis0.config.can.torques_msg_rate_ms = 0
-odrv.axis0.config.can.error_msg_rate_ms = 0
-odrv.axis0.config.can.temperature_msg_rate_ms = 0
-odrv.axis0.config.can.bus_voltage_msg_rate_ms = 0
-odrv.axis0.config.enable_watchdog = False
-odrv.axis0.config.encoder_bandwidth = 100
-odrv.hall_encoder0.config.enabled = True
-odrv.axis0.config.load_encoder = EncoderId.HALL_ENCODER0
-odrv.axis0.config.commutation_encoder = EncoderId.HALL_ENCODER0
-odrv.config.enable_uart_a = False
+    "name": "Kollmorgen Actuator",
+    "description": "Kollmorgen actuator configuration converted to JSON style.",
+    "actuator_type": "rotary",
+    "units": "degrees",
+    "overall_ratio": 1.0,
+    "position_min": null,
+    "position_max": null,
+    "velocity_limit_physical": 10.0,
+    "homing_required": false,
+    "homing_direction": null,
+    "homing_velocity": null,
+    "homing_backoff": null,
+    "homing_threshold": null,
+    "home_position": null,
+    "motor": {
+        "node_id": 63,
+        "pole_pairs": 7,
+        "torque_constant": 0.049237913788997376,
+        "velocity_constant": null,
+        "current_limit": 13.9,
+        "velocity_limit": 10.0,
+        "encoder_cpr": null
+    },
+    "load_encoder": {
+        "enabled": true,
+        "encoder_type": "hall",
+        "counts_per_unit": null,
+        "lvdt_v1": null,
+        "lvdt_x1": null,
+        "lvdt_v2": null,
+        "lvdt_x2": null,
+        "lvdt_offset": null
+    },
+    "controller": {
+        "control_mode": "velocity",
+        "input_mode": "vel_ramp",
+        "vel_limit": 10.0,
+        "vel_limit_tolerance": 1.2,
+        "vel_ramp_rate": 2.0,
+        "accel_limit": 2.0
+    },
+    "can": {
+        "protocol": "simple",
+        "baud_rate": 0,
+        "heartbeat_msg_rate_ms": 100,
+        "encoder_msg_rate_ms": 0,
+        "iq_msg_rate_ms": 0,
+        "torques_msg_rate_ms": 0,
+        "error_msg_rate_ms": 0,
+        "temperature_msg_rate_ms": 0,
+        "bus_voltage_msg_rate_ms": 0
+    },
+    "limits": {
+        "dc_bus_overvoltage_trip_level": 50.0,
+        "dc_bus_undervoltage_trip_level": 10.5,
+        "dc_max_positive_current": null,
+        "dc_max_negative_current": null,
+        "torque_soft_min": null,
+        "torque_soft_max": null
+    },
+    "misc": {
+        "enable_watchdog": false,
+        "encoder_bandwidth": 100,
+        "enable_uart_a": false
+    }
 }
