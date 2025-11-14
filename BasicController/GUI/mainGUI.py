@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 
 # Add parent directory to path to import can_runner
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from can_runner import HighPerformanceODriveSystem
+from BasicController.can_runner import HighPerformanceODriveSystem
 
 
 class ODriveWorker(QThread):
