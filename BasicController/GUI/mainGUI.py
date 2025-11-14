@@ -119,7 +119,6 @@ class ODriveGUI(QMainWindow):
         self.setStatusBar(self.statusBar)
         self.statusBar.showMessage("Disconnected")
         
-        
         # Apply styling
         self.apply_styling()
         
