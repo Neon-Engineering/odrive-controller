@@ -37,10 +37,10 @@ class SimpleCANManager:
     Simple high-performance CAN manager with thread-safe queues
     """
     
-    def __init__(self, node_id: int = 0, bitrate: int = 500000):
+    def __init__(self, node_id: int = 0, bitrate: int = 500000, bus=None):
         self.node_id = node_id
         self.bitrate = bitrate
-        self.bus = None
+        self.bus = bus
         self.node = None
         self._node_context = None
         
@@ -64,26 +64,18 @@ class SimpleCANManager:
         """Initialize CAN bus and start threads"""
         try:
             print("🔌 Initializing Simple CAN Manager...")
-            
-            # Setup CAN bus
-            self.bus = can.Bus(
-                interface='gs_usb',
-                channel='can0',
-                index=0,
-                bitrate=self.bitrate
-            )
-            
-            # Create node
+            if self.bus is None:
+                self.bus = can.Bus(
+                    interface='gs_usb',
+                    channel='can0',
+                    index=0,
+                    bitrate=self.bitrate
+                )
             self.node = CanSimpleNode(self.bus, self.node_id)
             self._node_context = self.node.__enter__()
-            
-            # Clear errors
             self.node.clear_errors_msg()
-            
-            # Start threads
             self.running = True
             self._start_threads()
-            
             print("✅ Simple CAN Manager initialized")
             return True
             
@@ -317,11 +309,18 @@ class SimpleCANManager:
             self._node_context.__exit__(None, None, None)
         
         if self.bus:
-            self.bus.shutdown()
-        
+            try:
+                print(f"[LOG] Shutting down CAN bus in SimpleCANManager (bus={self.bus})...")
+                self.bus.shutdown()
+                print("[LOG] CAN bus shutdown complete in SimpleCANManager.")
+            except Exception as e:
+                print(f"[ERROR] Exception during CAN bus shutdown in SimpleCANManager: {e}")
+                import traceback
+                traceback.print_exc()
+
         print("✅ Simple CAN Manager shutdown complete")
 
 # Factory function
-def create_simple_can_manager(node_id: int = 0) -> SimpleCANManager:
+def create_simple_can_manager(node_id: int = 0, bus=None) -> SimpleCANManager:
     """Create simple CAN manager"""
-    return SimpleCANManager(node_id=node_id)
+    return SimpleCANManager(node_id=node_id, bus=bus)

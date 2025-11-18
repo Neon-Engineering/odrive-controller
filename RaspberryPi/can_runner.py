@@ -65,7 +65,7 @@ class SimpleTelemetryManager:
     def start(self):
         """Start telemetry collection"""
         print("📡 Starting Simple Telemetry Manager...")
-        self.running = Truegs
+        self.running = True
         self.thread = threading.Thread(target=self._telemetry_thread, daemon=True)
         self.thread.start()
     
