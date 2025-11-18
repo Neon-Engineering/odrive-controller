@@ -1,6 +1,57 @@
+import os
+async def discover_and_assign_node_id(can_interface, can_channel, can_bitrate, preferred_node_id=1, timeout=2.0):
+    """
+    Scan the CAN bus for ODrives and assign a node ID if needed.
+    Returns the discovered or assigned node ID, or None if not found.
+    """
+    import can
+    import time
+    print(f"🔍 Scanning CAN bus for ODrives (interface={can_interface}, channel={can_channel}, bitrate={can_bitrate})...")
+    bus = can.Bus(interface=can_interface, channel=can_channel, bitrate=can_bitrate, index=0)
+    found_ids = set()
+    start_time = time.time()
+    # Listen for any ODrive heartbeat or status messages
+    while time.time() - start_time < timeout:
+        msg = bus.recv(timeout=0.1)
+        if msg and (msg.arbitration_id >> 5) not in found_ids:
+            node_id = (msg.arbitration_id >> 5) & 0x3F
+            if node_id != 0:
+                found_ids.add(node_id)
+                print(f"  - Found ODrive with node ID: {node_id}")
+    if found_ids:
+        print(f"✅ Discovered ODrive node IDs: {sorted(found_ids)}")
+        bus.shutdown()
+        return min(found_ids)  # Use the lowest found node ID
+    # If no ODrive found, try to assign node ID to a device in unassigned state (node_id=0)
+    print("No ODrive node IDs found. Trying to assign node ID to unassigned device...")
+    # ODrive CAN protocol: send assignment to node_id=0 (broadcast)
+    ASSIGN_NODE_ID_CMD = 0x1B
+    msg = can.Message(
+        arbitration_id=(0 << 5) | ASSIGN_NODE_ID_CMD,
+        data=[preferred_node_id],
+        is_extended_id=False
+    )
+    bus.send(msg)
+    print(f"Sent node ID assignment command to node 0, assigning node ID {preferred_node_id}.")
+    # Wait for device to come up with new node ID
+    time.sleep(0.5)
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        msg = bus.recv(timeout=0.1)
+        if msg:
+            node_id = (msg.arbitration_id >> 5) & 0x3F
+            if node_id == preferred_node_id:
+                print(f"✅ ODrive accepted node ID {preferred_node_id}!")
+                bus.shutdown()
+                return preferred_node_id
+    print("❌ No ODrive responded after node ID assignment.")
+    bus.shutdown()
+    return None
 # Software version tracking
 SOFTWARE_VERSION = "1.1.0"
 SOFTWARE_NAME = "ODrive High-Performance CAN Control System"
+
+
 
 import argparse
 import asyncio
@@ -9,20 +60,42 @@ import time
 import threading
 from pathlib import Path
 from datetime import datetime
+import json
+import can
 
 # Add modules directory to path
 sys.path.append(str(Path(__file__).parent / "modules"))
 
+
 # Import fixed modular components
-from modules.simple_can_manager import create_simple_can_manager
+from modules.simple_can_manager import create_simple_can_manager, SimpleCANManager
 from modules.trajectory_player import create_trajectory_player
 
 # Import existing utilities
-from BasicController.utils.can_simple_utils import CanSimpleNode
+from utils.can_simple_utils import CanSimpleNode
 import libusb_backend_workaround
 
 # Initialize libusb backend
 libusb_backend_workaround.find_libusb_backend()
+
+def load_can_settings(config_path="can_settings.json"):
+    """Load CAN settings from a JSON config file, or provide defaults."""
+    default = {
+        "can_interface": "gs_usb",
+        "can_channel": "can0",
+        "can_bitrate": 1000000,
+        "can_node_id": 1
+    }
+    try:
+        with open(config_path, "r") as f:
+            user = json.load(f)
+        for k in default:
+            if k not in user:
+                user[k] = default[k]
+        return user
+    except Exception:
+        return default
+
 
 class SimpleTelemetryManager:
     """
@@ -41,18 +114,15 @@ class SimpleTelemetryManager:
     
     def __init__(self, can_manager):
         self.can_manager = can_manager
-        
         # Load torque constant from config
         self.torque_constant = 0.0827  # Default from config.json
         try:
-            import json
             with open('config.json', 'r') as f:
                 config = json.load(f)
                 self.torque_constant = config.get('axis0.config.motor.torque_constant', 0.0827)
                 print(f"📊 Loaded torque constant: {self.torque_constant:.4f} Nm/A")
         except Exception as e:
             print(f"⚠️ Could not load torque constant from config: {e}, using default: {self.torque_constant}")
-        
         self.latest_data = {
             'position': None, 'velocity': None, 'motor_temp': None,
             'fet_temp': None, 'timestamp': time.time(),
@@ -61,7 +131,6 @@ class SimpleTelemetryManager:
         }
         self.running = False
         self.thread = None
-        
         # Encoder update tracking for drop detection
         self.last_encoder_update = 0.0
         self.encoder_drop_warnings = 0
@@ -1663,27 +1732,71 @@ class HighPerformanceODriveSystem:
         
         print("✅ System shutdown complete")
 
+
+
 async def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description=f"{SOFTWARE_NAME} v{SOFTWARE_VERSION}")
-    parser.add_argument('--node-id', type=int, default=0, help='ODrive node ID (default: 0)')
-    
-    args = parser.parse_args()
-    
-    # Create system
-    system = HighPerformanceODriveSystem(node_id=args.node_id)
-    
+    # Load CAN settings from config file
+    can_settings = load_can_settings("can_settings.json")
+    node_id = can_settings.get("can_node_id", 1)
+    can_interface = can_settings.get("can_interface", "gs_usb")
+    can_channel = can_settings.get("can_channel", "can0")
+    can_bitrate = can_settings.get("can_bitrate", 1000000)
+
+    # Patch SimpleCANManager to use loaded CAN settings
+    class PatchedSimpleCANManager(SimpleCANManager):
+        async def initialize(self) -> bool:
+            try:
+                print(f"🔌 Initializing Simple CAN Manager (interface={can_interface}, channel={can_channel}, bitrate={can_bitrate})...")
+                self.bus = can.Bus(
+                    interface=can_interface,
+                    channel=can_channel,
+                    index=0,
+                    bitrate=can_bitrate
+                )
+                self.node = CanSimpleNode(self.bus, self.node_id)
+                self._node_context = self.node.__enter__()
+                self.node.clear_errors_msg()
+                self.running = True
+                self._start_threads()
+                print("✅ Simple CAN Manager initialized")
+                return True
+            except Exception as e:
+                print(f"❌ CAN Manager initialization failed: {e}")
+                return False
+
+    # Patch the factory to use our CAN settings
+    def create_patched_can_manager(node_id):
+        return PatchedSimpleCANManager(node_id=node_id, bitrate=can_bitrate)
+
+    # Patch the global factory used by HighPerformanceODriveSystem
+    import modules.simple_can_manager as scm
+    scm.create_simple_can_manager = create_patched_can_manager
+
+    # --- Node ID discovery/assignment logic ---
+    discovered_node_id = await discover_and_assign_node_id(can_interface, can_channel, can_bitrate, preferred_node_id=node_id)
+    if discovered_node_id is not None and discovered_node_id != node_id:
+        print(f"Updating can_settings.json with discovered node ID {discovered_node_id}...")
+        # Update config file
+        config_path = os.path.join(os.path.dirname(__file__), "can_settings.json")
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            config["can_node_id"] = discovered_node_id
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
+            node_id = discovered_node_id
+        except Exception as e:
+            print(f"⚠️ Could not update can_settings.json: {e}")
+
+    # Now run the real system
     try:
-        # Initialize
+        system = HighPerformanceODriveSystem(node_id=node_id)
         success = await system.initialize()
-        
         if not success:
             print("❌ Initialization failed")
             return 1
-        
-        # Run interactive CLI
         await system.run_interactive_cli()
-        
     except KeyboardInterrupt:
         print("\n⚠️ Interrupted by user")
     except Exception as e:
@@ -1692,7 +1805,6 @@ async def main():
         traceback.print_exc()
     finally:
         await system.shutdown()
-    
     return 0
 
 if __name__ == "__main__":

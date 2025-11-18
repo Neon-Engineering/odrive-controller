@@ -1,0 +1,6 @@
+{
+  "can_interface": "gs_usb",
+  "can_channel": "can0",
+  "can_bitrate": 1000000,
+  "can_node_id": 0
+}

@@ -11,7 +11,30 @@ flat_endpoints.json was obtained from https://docs.odriverobotics.com/releases/f
 
 odrive_demo_xxxx.py files are meant for direct USB connection and not CAN interface.
 
+
 # CAN Interface
+## CAN Configuration File (can_settings.json)
+
+The CAN interface, channel, bitrate, and node ID are now configurable via `can_settings.json` in this directory. This allows you to easily switch between different ODrive hardware or CAN adapters without changing code or command-line arguments.
+
+**Example `can_settings.json`:**
+
+```
+{
+    "can_interface": "gs_usb",
+    "can_channel": "can0",
+    "can_bitrate": 1000000,
+    "can_node_id": 1
+}
+```
+
+- `can_interface`: The Python-CAN interface name (e.g., `gs_usb`, `socketcan`, etc.)
+- `can_channel`: The CAN channel/device (e.g., `can0`, `can1`, etc.)
+- `can_bitrate`: The CAN bus bitrate (e.g., 1000000 for 1 Mbps)
+- `can_node_id`: The ODrive node ID to communicate with
+
+If the file is missing, defaults will be used. Update this file to match your hardware and ODrive configuration.
+
 
 ## libusb Issue Workaround
 
@@ -43,4 +66,4 @@ We are currently working on using the ODrive experimental anticogging function t
 
 When we are ready to move into controlling the motor, the link to the ODrive documentation for controls can be found at: https://docs.odriverobotics.com/v/latest/manual/control.html
 
-The ODrive can be controlled using can_runner.py via CLI or GUI/mainGUI.py via GUI.
+The ODrive can be controlled using can_runner.py via CLI or GUI/mainGUI.py via GUI. The CAN settings in `can_settings.json` will be used automatically by `can_runner.py`.
