@@ -200,7 +200,7 @@ class ODriveGUI(QMainWindow):
         
         vel_layout.addWidget(QLabel("Target Velocity (turns/s):"), 0, 0)
         self.spin_vel_target = QDoubleSpinBox()
-        self.spin_vel_target.setRange(-10, 10)
+        self.spin_vel_target.setRange(-60, 60)
         self.spin_vel_target.setDecimals(2)
         self.spin_vel_target.setSingleStep(0.1)
         vel_layout.addWidget(self.spin_vel_target, 0, 1)
@@ -1161,3 +1161,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 

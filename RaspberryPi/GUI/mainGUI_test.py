@@ -30,6 +30,12 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from can_runner import HighPerformanceODriveSystem
 
+# Import error handler for human-readable error descriptions
+import importlib.util
+error_handler_path = str(Path(__file__).parent.parent / 'utils' / 'error_handler.py')
+spec = importlib.util.spec_from_file_location('error_handler', error_handler_path)
+error_handler_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(error_handler_module)
 
 class ODriveWorker(QThread):
     """Background thread for running ODrive system"""
@@ -89,6 +95,13 @@ class ODriveGUI(QMainWindow):
         self.plot_timer = QTimer()
         self.plot_timer.timeout.connect(self.update_plot)
         self.plot_timer.setInterval(200)  # 200ms = 5Hz
+        
+         # Error handler for decoding error codes (can_manager is optional for description lookup)
+        try:
+            self.error_handler = error_handler_module.ErrorHandler(None)
+        except Exception:
+            self.error_handler = None
+        
         
         self.init_ui()
         
@@ -1010,6 +1023,15 @@ class ODriveGUI(QMainWindow):
             torque_estimate = data.get('torque_estimate')
             self.lbl_torque_estimate.setText(f"{torque_estimate:.3f}" if torque_estimate is not None else "N/A")
             
+            # Error reporting
+            error_code = data.get('error_code')
+            if error_code is not None and error_code != 0:
+                if self.error_handler:
+                    desc = self.error_handler.get_error_description(error_code)
+                else:
+                    desc = "(error_handler unavailable)"
+                self.log_to_console(f"? ODrive Error: 0x{error_code:04X} - {desc}")
+            
             # If plotting is enabled, add data to plot buffers (LOW PRIORITY)
             if self.plot_enabled:
                 if self.plot_start_time is None:
@@ -1161,3 +1183,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+ 

@@ -325,8 +325,8 @@ class SimplePositionController:
         self.trajectory_active = False
         self.trajectory_thread = None
         self.trajectory_stop_event = threading.Event()
-        self.max_velocity = 10.0  # turns/sec
-        self.max_acceleration = 10.0  # turns/sec²
+        self.max_velocity = 60.0  # turns/sec
+        self.max_acceleration = 50.0  # turns/sec²
     
     def activate(self):
         """Activate position control"""
@@ -361,15 +361,15 @@ class SimplePositionController:
         return False
     
     def set_velocity(self, velocity: float) -> bool:
-        """Set velocity target (for testing - like working can_simple.py)"""
-        clamped_velocity = max(-self.max_velocity, min(self.max_velocity, velocity))
-        if clamped_velocity != velocity:
-            print(f"⚠️ Velocity clamped: {velocity:.3f} -> {clamped_velocity:.3f}")
+#         """Set velocity target (for testing - like working can_simple.py)"""
+#         clamped_velocity = max(-self.max_velocity, min(self.max_velocity, velocity))
+#         if clamped_velocity != velocity:
+#             print(f"⚠️ Velocity clamped: {velocity:.3f} -> {clamped_velocity:.3f}")
+#         
+#         # Debug: Show what we're sending
+#         print(f"📡 Sending velocity command: {clamped_velocity:.3f} turns/s (CAN ID: 0x{(self.can_manager.node_id << 5 | 0x0D):02X})")
         
-        # Debug: Show what we're sending
-        print(f"📡 Sending velocity command: {clamped_velocity:.3f} turns/s (CAN ID: 0x{(self.can_manager.node_id << 5 | 0x0D):02X})")
-        
-        success = self.can_manager.send_velocity_command(clamped_velocity)
+        success = self.can_manager.send_velocity_command(velocity)
         if success:
             self.stats['commands_sent'] += 1
             print(f"✅ Velocity command queued successfully")
@@ -712,6 +712,44 @@ class HighPerformanceODriveSystem:
             await self.shutdown()
             return False
     
+    async def read_odrive_errors(self):
+        """
+        Read and log ODrive error registers for axis0.
+
+        This assumes you have a USB/fibre handle like self.odrv or self.usb_odrv.
+        If your implementation is different, adjust the attribute names accordingly.
+        """
+        try:
+            # Try to get a USB ODrive handle used for diagnostics
+            odrv = getattr(self, "odrv", None) or getattr(self, "usb_odrv", None)
+            if odrv is None:
+                print("[ODriveErrors] No USB ODrive handle available.")
+                return None
+
+            axis = odrv.axis0
+
+            errors = {
+                "axis_error": int(axis.error),
+                "motor_error": int(axis.motor.error),
+                "controller_error": int(axis.controller.error),
+                "encoder_error": int(axis.encoder.error),
+                "current_state": int(axis.current_state),
+            }
+
+            print("===== ODrive Error Snapshot (axis0) =====")
+            print(f"axis.error        = 0x{errors['axis_error']:08X}")
+            print(f"motor.error       = 0x{errors['motor_error']:08X}")
+            print(f"controller.error  = 0x{errors['controller_error']:08X}")
+            print(f"encoder.error     = 0x{errors['encoder_error']:08X}")
+            print(f"axis.current_state= {errors['current_state']}")
+            print("=========================================")
+
+            return errors
+
+        except Exception as e:
+            print(f"[ODriveErrors] Failed to read errors: {e}")
+            return None
+        
     async def arm_system(self) -> bool:
         """Arm the ODrive system (assumes pre-configured)"""
         if not self.initialized:
@@ -1219,13 +1257,45 @@ class HighPerformanceODriveSystem:
                 
             elif cmd == "config" and len(parts) >= 2:
                 subcommand = parts[1].lower()
-                if subcommand == "load" and len(parts) >= 3:
-                    config_file = parts[2]
+
+                if subcommand == "load":
+                    # If a path is provided, use it; otherwise open a file dialog
+                    if len(parts) >= 3:
+                        # Allow spaces in filename
+                        config_file = " ".join(parts[2:])
+                    else:
+                        try:
+                            # Lazy import so we don't require Tk unless needed
+                            from tkinter import Tk, filedialog
+
+                            print("?? Opening file dialog to select config JSON...")
+                            root = Tk()
+                            root.withdraw()  # Hide main Tk window
+
+                            config_file = filedialog.askopenfilename(
+                                title="Select ODrive config JSON file",
+                                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+                            )
+
+                            root.destroy()
+
+                            if not config_file:
+                                print("?? Config load cancelled (no file selected)")
+                                return
+                        except Exception as e:
+                            print(f"? Failed to open file dialog: {e}")
+                            print("   You can still load a config by specifying the path:")
+                            print("   config load /path/to/config.json")
+                            return
+
                     await self._load_config_file(config_file)
+
                 elif subcommand == "save":
                     await self._save_config_to_odrive()
                 else:
-                    print("Usage: config load <file.json> | config save")
+                    print("Usage: config load [file.json] | config save")
+                    print("  If you omit file.json, a file picker will open.")
+
                 
             elif cmd in ["quit", "exit", "q"]:
                 self.cli_active = False
@@ -1665,7 +1735,7 @@ async def main():
     parser.add_argument('--node-id', type=int, default=0, help='ODrive node ID (default: 0)')
     
     args = parser.parse_args()
-    
+
     # Create system
     system = HighPerformanceODriveSystem(node_id=args.node_id)
     

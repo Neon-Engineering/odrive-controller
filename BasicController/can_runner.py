@@ -18,7 +18,7 @@ from modules.simple_can_manager import create_simple_can_manager
 from modules.trajectory_player import create_trajectory_player
 
 # Import existing utilities
-from BasicController.utils.can_simple_utils import CanSimpleNode
+from utils.can_simple_utils import CanSimpleNode
 import libusb_backend_workaround
 
 # Initialize libusb backend

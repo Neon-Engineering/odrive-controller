@@ -6,14 +6,14 @@ Requires=network.target
 [Service]
 Type=simple
 User=neonaero
-WorkingDirectory=/home/neonaero/Documents/odrive-controller/odrive-controller-odrive-rpi/RaspberryPi
+WorkingDirectory=/home/neonaero/Documents/odrive-controller/odrive-controller/RaspberryPi
 # Bring up can0 only while this service runs. Use ExecStartPre to configure
 # the interface and ExecStopPost to tear it down. BITRATE can be overridden
 # via an Environment= variable if desired.
 ExecStartPre=sudo /usr/sbin/ip link set can0 type can bitrate 1000000
 ExecStartPre=sudo /usr/sbin/ip link set can0 up
 ExecStart=/home/neonaero/Documents/odrive-controller/myenv/bin/python can_runner.py
-ExecStopPost=/sbin/ip link set can0 down
+ExecStopPost=sudo /usr/sbin/ip link set can0 down
 Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
