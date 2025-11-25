@@ -1,22 +1,25 @@
 [Unit]
-Description=Bring up SocketCAN interface %i (can0)
+Description=Bring up SocketCAN interface can0
 Documentation=man:ip(8)
-After=network.target
-Wants=network.target
+After=network.target sys-subsystem-net-devices-can0.device
+Wants=network.target sys-subsystem-net-devices-can0.device
 
 [Service]
 Type=oneshot
+User=neonaerolab
 RemainAfterExit=yes
 # Interface and bitrate are configurable via Environment variables below.
-Environment=IFACE=can0 BITRATE=500000
+Environment=IFACE=can0 BITRATE=1000000
+# Wait for USB CAN device to be ready (up to 10 seconds)
+ExecStart=/bin/sh -c 'for i in $(seq 1 20); do [ -e /sys/class/net/${IFACE} ] && break || sleep 0.5; done'
 # Ensure interface is down first (ignore failure)
-ExecStart=/sbin/ip link set ${IFACE} down || true
+ExecStart=-sudo /usr/sbin/ip link set ${IFACE} down
 # Configure type and bitrate (requires CAP_NET_ADMIN / sudo)
-ExecStart=/bin/sh -c '/sbin/ip link set ${IFACE} type can bitrate ${BITRATE}'
+ExecStart=sudo /usr/bin/sh -c '/sbin/ip link set ${IFACE} type can bitrate ${BITRATE}'
+# Wait for hardware to be ready
+ExecStart=/bin/sleep 2
 # Bring interface up
-ExecStart=/sbin/ip link set ${IFACE} up
-# On stop, bring the interface down
-ExecStop=/sbin/ip link set ${IFACE} down
+ExecStart=sudo /usr/sbin/ip link set ${IFACE} up
 TimeoutStartSec=20
 TimeoutStopSec=10
 

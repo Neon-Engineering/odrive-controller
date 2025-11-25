@@ -7,7 +7,7 @@ import math
 import struct
 from utils.can_simple_utils import CanSimpleNode, REBOOT_ACTION_SAVE # if this import fails, make sure you copy the whole folder from the git repository
 
-import libusb_backend_workaround
+# import libusb_backend_workaround
 
 # Do not call find_libusb_backend() at import time. If the user requests a
 # GS-USB backend we will initialize the libusb workaround at runtime in main().

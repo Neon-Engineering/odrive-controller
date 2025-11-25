@@ -7,6 +7,7 @@ import asyncio
 import sys
 import time
 import threading
+import can
 from pathlib import Path
 from datetime import datetime
 
@@ -325,8 +326,8 @@ class SimplePositionController:
         self.trajectory_active = False
         self.trajectory_thread = None
         self.trajectory_stop_event = threading.Event()
-        self.max_velocity = 60.0  # turns/sec
-        self.max_acceleration = 50.0  # turns/sec²
+        self.max_velocity = 10.0  # turns/sec
+        self.max_acceleration = 10.0  # turns/sec²
     
     def activate(self):
         """Activate position control"""
@@ -361,15 +362,15 @@ class SimplePositionController:
         return False
     
     def set_velocity(self, velocity: float) -> bool:
-#         """Set velocity target (for testing - like working can_simple.py)"""
-#         clamped_velocity = max(-self.max_velocity, min(self.max_velocity, velocity))
-#         if clamped_velocity != velocity:
-#             print(f"⚠️ Velocity clamped: {velocity:.3f} -> {clamped_velocity:.3f}")
-#         
-#         # Debug: Show what we're sending
-#         print(f"📡 Sending velocity command: {clamped_velocity:.3f} turns/s (CAN ID: 0x{(self.can_manager.node_id << 5 | 0x0D):02X})")
+        """Set velocity target (for testing - like working can_simple.py)"""
+        clamped_velocity = max(-self.max_velocity, min(self.max_velocity, velocity))
+        if clamped_velocity != velocity:
+            print(f"⚠️ Velocity clamped: {velocity:.3f} -> {clamped_velocity:.3f}")
         
-        success = self.can_manager.send_velocity_command(velocity)
+        # Debug: Show what we're sending
+        print(f"📡 Sending velocity command: {clamped_velocity:.3f} turns/s (CAN ID: 0x{(self.can_manager.node_id << 5 | 0x0D):02X})")
+        
+        success = self.can_manager.send_velocity_command(clamped_velocity)
         if success:
             self.stats['commands_sent'] += 1
             print(f"✅ Velocity command queued successfully")
@@ -712,44 +713,6 @@ class HighPerformanceODriveSystem:
             await self.shutdown()
             return False
     
-    async def read_odrive_errors(self):
-        """
-        Read and log ODrive error registers for axis0.
-
-        This assumes you have a USB/fibre handle like self.odrv or self.usb_odrv.
-        If your implementation is different, adjust the attribute names accordingly.
-        """
-        try:
-            # Try to get a USB ODrive handle used for diagnostics
-            odrv = getattr(self, "odrv", None) or getattr(self, "usb_odrv", None)
-            if odrv is None:
-                print("[ODriveErrors] No USB ODrive handle available.")
-                return None
-
-            axis = odrv.axis0
-
-            errors = {
-                "axis_error": int(axis.error),
-                "motor_error": int(axis.motor.error),
-                "controller_error": int(axis.controller.error),
-                "encoder_error": int(axis.encoder.error),
-                "current_state": int(axis.current_state),
-            }
-
-            print("===== ODrive Error Snapshot (axis0) =====")
-            print(f"axis.error        = 0x{errors['axis_error']:08X}")
-            print(f"motor.error       = 0x{errors['motor_error']:08X}")
-            print(f"controller.error  = 0x{errors['controller_error']:08X}")
-            print(f"encoder.error     = 0x{errors['encoder_error']:08X}")
-            print(f"axis.current_state= {errors['current_state']}")
-            print("=========================================")
-
-            return errors
-
-        except Exception as e:
-            print(f"[ODriveErrors] Failed to read errors: {e}")
-            return None
-        
     async def arm_system(self) -> bool:
         """Arm the ODrive system (assumes pre-configured)"""
         if not self.initialized:
@@ -760,6 +723,11 @@ class HighPerformanceODriveSystem:
         print("ℹ️  Motor will remain idle until commanded")
         
         try:
+            # Clear any errors first (important after reboot/config changes)
+            print("🧹 Clearing ODrive errors...")
+            self.can_manager.node.clear_errors_msg()
+            await asyncio.sleep(0.2)
+            
             # Just software safety - no motor state changes
             print("✅ Control commands enabled")
             print("📍 Motor stays in idle state until actual commands")
@@ -775,6 +743,9 @@ class HighPerformanceODriveSystem:
                 print(f"📊 Current velocity: {velocity:.3f} turns/s" if velocity is not None else "📊 Velocity: N/A")
             else:
                 print("⚠️ No position feedback - check CAN connection")
+                print("💡 If you see 'MISSING_ESTIMATE' error, motor may need calibration:")
+                print("   Option 1: Use odrivetool to run full calibration sequence")
+                print("   Option 2: If pre-calibrated, ensure startup_* procedures are in config")
                 return False
             
             # Activate position controller (software only)
@@ -1257,45 +1228,13 @@ class HighPerformanceODriveSystem:
                 
             elif cmd == "config" and len(parts) >= 2:
                 subcommand = parts[1].lower()
-
-                if subcommand == "load":
-                    # If a path is provided, use it; otherwise open a file dialog
-                    if len(parts) >= 3:
-                        # Allow spaces in filename
-                        config_file = " ".join(parts[2:])
-                    else:
-                        try:
-                            # Lazy import so we don't require Tk unless needed
-                            from tkinter import Tk, filedialog
-
-                            print("?? Opening file dialog to select config JSON...")
-                            root = Tk()
-                            root.withdraw()  # Hide main Tk window
-
-                            config_file = filedialog.askopenfilename(
-                                title="Select ODrive config JSON file",
-                                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-                            )
-
-                            root.destroy()
-
-                            if not config_file:
-                                print("?? Config load cancelled (no file selected)")
-                                return
-                        except Exception as e:
-                            print(f"? Failed to open file dialog: {e}")
-                            print("   You can still load a config by specifying the path:")
-                            print("   config load /path/to/config.json")
-                            return
-
+                if subcommand == "load" and len(parts) >= 3:
+                    config_file = parts[2]
                     await self._load_config_file(config_file)
-
                 elif subcommand == "save":
                     await self._save_config_to_odrive()
                 else:
-                    print("Usage: config load [file.json] | config save")
-                    print("  If you omit file.json, a file picker will open.")
-
+                    print("Usage: config load <file.json> | config save")
                 
             elif cmd in ["quit", "exit", "q"]:
                 self.cli_active = False
@@ -1532,6 +1471,8 @@ class HighPerformanceODriveSystem:
         import json
         from utils.can_simple_utils import CanSimpleNode
         
+        telemetry_was_running = False
+        
         try:
             # Check if config file exists
             if not os.path.exists(config_file):
@@ -1556,6 +1497,13 @@ class HighPerformanceODriveSystem:
                 endpoint_data = json.load(f)
             
             print(f"📡 Found {len(config_data)} configuration parameters")
+            
+            # Stop telemetry polling to clear CAN bus for config writes
+            if self.telemetry_manager and self.telemetry_manager.running:
+                print("⏸️ Stopping telemetry polling to clear CAN bus...")
+                self.telemetry_manager.stop()
+                telemetry_was_running = True
+                await asyncio.sleep(0.5)  # Let telemetry thread finish
             
             # Create EndpointAccess for config loading
             from utils.can_restore_config import EndpointAccess, restore_config
@@ -1609,16 +1557,33 @@ class HighPerformanceODriveSystem:
                 print("💡 Use 'config save' to save to ODrive NVM and reboot")
             else:
                 print(f"⚠️ {failed} parameters failed to load - check ODrive state and parameter compatibility")
+            
+            # Restart telemetry if it was running
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry...")
+                self.telemetry_manager.start()
 
                 
         except FileNotFoundError as e:
             print(f"❌ File not found: {e}")
+            # Restart telemetry on error
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry after error...")
+                self.telemetry_manager.start()
         except json.JSONDecodeError as e:
             print(f"❌ Invalid JSON format: {e}")
+            # Restart telemetry on error
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry after error...")
+                self.telemetry_manager.start()
         except Exception as e:
             print(f"❌ Config loading failed: {e}")
             import traceback
             traceback.print_exc()
+            # Restart telemetry on error
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry after error...")
+                self.telemetry_manager.start()
     
     async def _write_parameter_direct(self, param_name: str, value, endpoints_data: dict):
         """Write parameter using existing CAN manager infrastructure"""
@@ -1679,27 +1644,88 @@ class HighPerformanceODriveSystem:
 
     async def _save_config_to_odrive(self):
         """Save current configuration to ODrive NVM and reboot"""
+        telemetry_was_running = False
+        
         try:
-            from utils.can_simple_utils import CanSimpleNode, REBOOT_ACTION_SAVE
+            from utils.can_simple_utils import REBOOT_ACTION_SAVE
             
             print("💾 Saving configuration to ODrive NVM...")
             
-            # Use the existing CAN manager's node for reboot command
-            with CanSimpleNode(bus=self.can_manager.bus, node_id=self.node_id) as config_node:
-                config_node.reboot_msg(REBOOT_ACTION_SAVE)
+            # Use the existing CAN manager's node (already has a Notifier attached)
+            if not self.can_manager or not self.can_manager.node:
+                print("❌ CAN manager not initialized")
+                return
+            
+            # Stop telemetry polling to clear CAN bus
+            if self.telemetry_manager and self.telemetry_manager.running:
+                print("⏸️ Stopping telemetry polling to clear CAN bus...")
+                self.telemetry_manager.stop()
+                telemetry_was_running = True
+                await asyncio.sleep(0.5)  # Let telemetry thread finish
+            
+            # Pause any active trajectory to clear the CAN bus
+            if self.position_controller and self.position_controller.trajectory_active:
+                print("⏸️ Stopping trajectory to clear CAN bus...")
+                self.position_controller.stop_trajectory()
+                await asyncio.sleep(0.3)  # Let bus settle
+            
+            # Wait a moment to let CAN transmit buffer drain completely
+            print("⏳ Waiting for CAN bus to settle...")
+            await asyncio.sleep(0.5)
+            
+            # Send reboot command with error handling
+            try:
+                msg = can.Message(
+                    arbitration_id=(self.node_id << 5) | 0x16,  # REBOOT_CMD
+                    data=[REBOOT_ACTION_SAVE],
+                    is_extended_id=False
+                )
+                self.can_manager.bus.send(msg, timeout=1.0)  # 1 second timeout
                 
                 print("✅ Configuration saved to NVM")
                 print("🔄 ODrive rebooting...")
-                print("⚠️ System will need re-initialization after reboot")
+                print("⏳ Waiting for ODrive to complete reboot (5 seconds)...")
                 
-                # Mark system as needing re-initialization
-                self.initialized = False
-                self.armed = False
+                # Wait for ODrive to reboot
+                await asyncio.sleep(5.0)
+                
+                # Restart telemetry to reconnect
+                print("🔄 Restarting telemetry...")
+                if self.telemetry_manager:
+                    self.telemetry_manager.start()
+                
+                # Wait for telemetry to stabilize
+                await asyncio.sleep(0.5)
+                
+                print("✅ ODrive rebooted with new configuration from NVM")
+                print("⚠️ Motor may need recalibration after configuration changes")
+                print("💡 Options:")
+                print("   1. If motor was pre-calibrated: Run 'arm' to prepare for control")
+                print("   2. If motor needs calibration: Use odrivetool to run full calibration")
+                print("   3. Check for errors: ODrive may show 'MISSING_ESTIMATE' - clear with 'arm' command")
+                
+                # Mark system as needing re-arming (but initialized)
+                self.initialized = True  # CAN communication is working
+                self.armed = False  # Need to arm again for safety
+                
+            except can.CanError as e:
+                print(f"❌ Failed to send reboot command: {e}")
+                print("💡 CAN bus may be overloaded - try disarming first")
+                
+                # Restart telemetry if it was running
+                if telemetry_was_running and self.telemetry_manager:
+                    print("🔄 Restarting telemetry...")
+                    self.telemetry_manager.start()
                 
         except Exception as e:
             print(f"❌ Config save failed: {e}")
             import traceback
             traceback.print_exc()
+            
+            # Restart telemetry if it was running and error occurred
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry after error...")
+                self.telemetry_manager.start()
     
     async def shutdown(self):
         """Shutdown all subsystems gracefully"""
@@ -1735,7 +1761,7 @@ async def main():
     parser.add_argument('--node-id', type=int, default=0, help='ODrive node ID (default: 0)')
     
     args = parser.parse_args()
-
+    
     # Create system
     system = HighPerformanceODriveSystem(node_id=args.node_id)
     
