@@ -41,7 +41,6 @@
   "axis0.config.can.temperature_msg_rate_ms": 0,
   "axis0.config.can.bus_voltage_msg_rate_ms": 0,
 		
-  "axis0.axisstate
   "axis0.config.enable_watchdog": false,
   "axis0.config.encoder_bandwidth": 350.0,
   "hall_encoder0.config.enabled": true,
