@@ -17,6 +17,7 @@ sys.path.append(str(Path(__file__).parent / "modules"))
 # Import fixed modular components
 from modules.simple_can_manager import create_simple_can_manager
 from modules.trajectory_player import create_trajectory_player
+from modules.odrive_calibration import create_odrive_calibration
 
 # Import existing utilities
 from utils.can_simple_utils import CanSimpleNode
@@ -656,6 +657,7 @@ class HighPerformanceODriveSystem:
         self.position_controller = None
         self.logger = None
         self.trajectory_player = None
+        self.calibration_manager = None  # ODrive calibration manager
         
         # System state
         self.initialized = False
@@ -695,6 +697,12 @@ class HighPerformanceODriveSystem:
             print("5️⃣ Initializing trajectory player...")
             self.trajectory_player = create_trajectory_player(
                 self.position_controller, self.telemetry_manager
+            )
+            
+            # 6. Initialize Calibration Manager
+            print("6️⃣ Initializing calibration manager...")
+            self.calibration_manager = create_odrive_calibration(
+                self.can_manager.node, self.node_id
             )
             
             # Wait for telemetry to start
@@ -784,6 +792,85 @@ class HighPerformanceODriveSystem:
         except Exception as e:
             print(f"⚠️ Disarm error: {e}")
             self.armed = False  # Force disarm for safety
+    
+    async def calibrate_motor(self, full_sequence: bool = True) -> bool:
+        """
+        Run ODrive motor calibration sequence
+        
+        This resolves MISSING_ESTIMATE errors that can occur after saving configs.
+        
+        Args:
+            full_sequence: If True, run full calibration (motor + encoder).
+                          If False, run motor calibration only.
+        
+        Returns:
+            True if calibration successful, False otherwise
+        """
+        if not self.initialized:
+            print("❌ System not initialized")
+            return False
+        
+        if not self.calibration_manager:
+            print("❌ Calibration manager not available")
+            return False
+        
+        # Ensure system is disarmed before calibration
+        if self.armed:
+            print("⚠️ Disarming system for calibration...")
+            await self.disarm_system()
+            await asyncio.sleep(0.5)
+        
+        # Stop telemetry during calibration to avoid bus conflicts
+        telemetry_was_running = False
+        if self.telemetry_manager and self.telemetry_manager.running:
+            print("⏸️ Pausing telemetry during calibration...")
+            self.telemetry_manager.stop()
+            telemetry_was_running = True
+            await asyncio.sleep(0.5)
+        
+        try:
+            if full_sequence:
+                success = await self.calibration_manager.run_full_calibration(timeout=60.0)
+            else:
+                success = await self.calibration_manager.run_motor_calibration(timeout=30.0)
+            
+            if success:
+                print("✅ Calibration successful!")
+                print("💡 Next steps:")
+                print("   1. Save configuration to persist calibration: 'config save'")
+                print("   2. Or configure pre-calibrated mode in your config file")
+                print("   3. Run 'arm' to prepare for control")
+            else:
+                print("❌ Calibration failed - check ODrive errors")
+            
+            # Restart telemetry
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry...")
+                self.telemetry_manager.start()
+                await asyncio.sleep(0.5)
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Calibration exception: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Restart telemetry on error
+            if telemetry_was_running and self.telemetry_manager:
+                print("🔄 Restarting telemetry after error...")
+                self.telemetry_manager.start()
+            
+            return False
+    
+    async def check_calibration_status(self):
+        """Check and display calibration status"""
+        if not self.initialized or not self.calibration_manager:
+            print("❌ System not initialized")
+            return
+        
+        status = await self.calibration_manager.check_calibration_status()
+        self.calibration_manager.print_calibration_status(status)
     
     async def enable_motor_for_position_control(self):
         """Enable motor in position control mode (force position mode via CAN command)"""
@@ -884,6 +971,9 @@ class HighPerformanceODriveSystem:
         print("  log status       - Show log statistics")
         print("  config load <file> - Load ODrive configuration from JSON file")
         print("  config save      - Save current configuration to ODrive NVM")
+        print("  calibrate        - Run full calibration (motor + encoder) [shortcut: cal]")
+        print("  calibrate motor  - Run motor calibration only")
+        print("  calstatus        - Check calibration status       [shortcut: calstat]")
         print("  status           - Show system status")
         print("  stats            - Show performance stats")
         print("  help             - Show this menu                 [shortcut: -h]")
@@ -1235,6 +1325,20 @@ class HighPerformanceODriveSystem:
                     await self._save_config_to_odrive()
                 else:
                     print("Usage: config load <file.json> | config save")
+            
+            elif cmd == "calibrate" or cmd == "cal":
+                # Full calibration by default
+                full = True
+                if len(parts) >= 2 and parts[1].lower() == "motor":
+                    full = False
+                    print("🔧 Running motor calibration only...")
+                else:
+                    print("🔧 Running full calibration (motor + encoder)...")
+                
+                await self.calibrate_motor(full_sequence=full)
+            
+            elif cmd == "calstatus" or cmd == "calstat":
+                await self.check_calibration_status()
                 
             elif cmd in ["quit", "exit", "q"]:
                 self.cli_active = False
@@ -1700,9 +1804,10 @@ class HighPerformanceODriveSystem:
                 print("✅ ODrive rebooted with new configuration from NVM")
                 print("⚠️ Motor may need recalibration after configuration changes")
                 print("💡 Options:")
-                print("   1. If motor was pre-calibrated: Run 'arm' to prepare for control")
-                print("   2. If motor needs calibration: Use odrivetool to run full calibration")
-                print("   3. Check for errors: ODrive may show 'MISSING_ESTIMATE' - clear with 'arm' command")
+                print("   1. Run calibration now: 'calibrate' or 'cal'")
+                print("   2. If motor was pre-calibrated: Run 'arm' to prepare for control")
+                print("   3. Check calibration status: 'calstatus'")
+                print("   4. Check for errors with 'status' command")
                 
                 # Mark system as needing re-arming (but initialized)
                 self.initialized = True  # CAN communication is working

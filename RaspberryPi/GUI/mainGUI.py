@@ -521,6 +521,13 @@ class ODriveGUI(QMainWindow):
         self.btn_save_config.setEnabled(False)
         config_layout.addWidget(self.btn_save_config, 2, 0, 1, 3)
         
+        # Calibration button
+        self.btn_calibrate = QPushButton("Run Full Calibration")
+        self.btn_calibrate.clicked.connect(self.calibrate_motor)
+        self.btn_calibrate.setEnabled(False)
+        self.btn_calibrate.setStyleSheet("QPushButton { background-color: #ff9800; color: white; font-weight: bold; }")
+        config_layout.addWidget(self.btn_calibrate, 3, 0, 1, 3)
+        
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
         
@@ -634,6 +641,7 @@ class ODriveGUI(QMainWindow):
                 self.btn_stop.setEnabled(True)
                 self.btn_load_config.setEnabled(True)
                 self.btn_save_config.setEnabled(True)
+                self.btn_calibrate.setEnabled(True)
                 
                 # Start telemetry updates
                 self.telemetry_timer.start(100)  # Update every 100ms
@@ -932,6 +940,53 @@ class ODriveGUI(QMainWindow):
     def save_config(self):
         """Save config (button handler)"""
         asyncio.ensure_future(self.save_config_async())
+    
+    async def calibrate_motor_async(self):
+        """Run motor calibration asynchronously"""
+        try:
+            reply = QMessageBox.warning(
+                self, "Motor Calibration",
+                "⚠️ WARNING: Motor will spin during calibration!\n\n"
+                "Ensure the motor shaft is free to move and there are no obstructions.\n\n"
+                "This will run a full calibration sequence (motor + encoder).\n"
+                "The process may take 15-30 seconds.\n\n"
+                "Continue?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.log_to_console("🔧 Starting motor calibration...")
+                self.btn_calibrate.setEnabled(False)
+                
+                success = await self.system.calibrate_motor(full_sequence=True)
+                
+                if success:
+                    self.log_to_console("✅ Calibration completed successfully!")
+                    QMessageBox.information(
+                        self, "Calibration Complete",
+                        "Motor calibration completed successfully!\n\n"
+                        "You can now:\n"
+                        "1. Save configuration to persist calibration\n"
+                        "2. Arm the system and start controlling the motor"
+                    )
+                else:
+                    self.log_to_console("❌ Calibration failed - check console for details")
+                    QMessageBox.warning(
+                        self, "Calibration Failed",
+                        "Motor calibration failed.\n\n"
+                        "Check the console output for error details."
+                    )
+                
+                self.btn_calibrate.setEnabled(True)
+                
+        except Exception as e:
+            self.log_to_console(f"❌ Calibration error: {e}")
+            QMessageBox.critical(self, "Calibration Error", str(e))
+            self.btn_calibrate.setEnabled(True)
+    
+    def calibrate_motor(self):
+        """Calibrate motor (button handler)"""
+        asyncio.ensure_future(self.calibrate_motor_async())
     
     # Logging commands
     async def start_logging_async(self):
