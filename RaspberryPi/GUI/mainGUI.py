@@ -724,65 +724,37 @@ class ODriveGUI(QMainWindow):
                     return
                 
                 discovery = NodeDiscovery(temp_can.bus)
-                nodes = await discovery.discover_nodes(timeout=3.0)
+                nodes = await discovery.enumerate_odrives(timeout=3.0)
                 
                 selected_node_id = None
                 
                 if len(nodes) == 0:
-                    # No nodes found via passive listening - try active scan
-                    self.log_to_console("⚠️ No ODrives discovered via heartbeat messages")
-                    self.log_to_console("🔍 Attempting active scan (probing all node IDs)...")
+                    # No nodes found - alert user and fall back
+                    self.log_to_console("⚠️ No ODrives discovered via enumeration protocol")
+                    self.log_to_console("⚠️ FALLING BACK to default node ID: 0")
                     
-                    nodes = await discovery.active_scan_nodes(timeout_per_node=0.2, max_node_id=63)
+                    reply = QMessageBox.warning(
+                        self, 
+                        "No ODrives Detected",
+                        "No ODrive nodes were detected on the CAN bus.\n\n"
+                        "Possible causes:\n"
+                        "• ODrive is not powered on\n"
+                        "• CAN bus is not connected properly\n"
+                        "• Wrong CAN bitrate configuration\n"
+                        "• ODrive not configured for CAN communication\n"
+                        "• ODrive may be unaddressed (needs node ID assignment)\n\n"
+                        "Do you want to continue with default node ID 0?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
                     
-                    if len(nodes) == 1:
-                        # Single node found via active scan
-                        selected_node_id = nodes[0]['node_id']
-                        self.log_to_console(f"✅ Active scan found ODrive at node ID {selected_node_id}")
-                        
-                    elif len(nodes) > 1:
-                        # Multiple nodes found via active scan - show selection dialog
-                        self.log_to_console(f"� Active scan found {len(nodes)} ODrive nodes")
-                        await temp_can.shutdown()
-                        
-                        dialog = NodeSelectionDialog(nodes, self)
-                        if dialog.exec_() == QDialog.Accepted:
-                            selected_node_id = dialog.get_selected_node_id()
-                            self.log_to_console(f"✅ Selected Node ID {selected_node_id}")
-                        else:
-                            self.log_to_console("❌ Connection cancelled by user")
-                            return
-                        
-                        temp_can = create_simple_can_manager(node_id=0)
-                        await temp_can.initialize()
-                        
+                    if reply == QMessageBox.Yes:
+                        selected_node_id = 0
                     else:
-                        # Still no nodes found - alert user and fall back
-                        self.log_to_console("⚠️ Active scan also found no ODrives")
-                        self.log_to_console("⚠️ FALLING BACK to default node ID: 0")
-                        
-                        reply = QMessageBox.warning(
-                            self, 
-                            "No ODrives Detected",
-                            "No ODrive nodes were detected on the CAN bus.\n\n"
-                            "Both passive listening and active scanning failed.\n\n"
-                            "Possible causes:\n"
-                            "• ODrive is not powered on\n"
-                            "• CAN bus is not connected properly\n"
-                            "• Wrong CAN bitrate configuration\n"
-                            "• ODrive not configured for CAN communication\n\n"
-                            "Do you want to continue with default node ID 0?",
-                            QMessageBox.Yes | QMessageBox.No,
-                            QMessageBox.No
-                        )
-                        
-                        if reply == QMessageBox.Yes:
-                            selected_node_id = 0
-                        else:
-                            self.log_to_console("❌ Connection cancelled by user")
-                            await temp_can.shutdown()
-                            return
-                        
+                        self.log_to_console("❌ Connection cancelled by user")
+                        await temp_can.shutdown()
+                        return
+
                 elif len(nodes) == 1:
                     # Single node found - use it automatically
                     selected_node_id = nodes[0]['node_id']
@@ -803,6 +775,19 @@ class ODriveGUI(QMainWindow):
                         return
                     
                     # Reinitialize temp_can for proper cleanup path
+                    temp_can = create_simple_can_manager(node_id=0)
+                    await temp_can.initialize()
+                    self.log_to_console(f"� Active scan found {len(nodes)} ODrive nodes")
+                    await temp_can.shutdown()
+                    
+                    dialog = NodeSelectionDialog(nodes, self)
+                    if dialog.exec_() == QDialog.Accepted:
+                        selected_node_id = dialog.get_selected_node_id()
+                        self.log_to_console(f"✅ Selected Node ID {selected_node_id}")
+                    else:
+                        self.log_to_console("❌ Connection cancelled by user")
+                        return
+                    
                     temp_can = create_simple_can_manager(node_id=0)
                     await temp_can.initialize()
                 
