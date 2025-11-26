@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QLineEdit, QTextEdit, QGroupBox, QGridLayout,
     QDoubleSpinBox, QSpinBox, QTabWidget, QFileDialog, QMessageBox,
-    QStatusBar, QProgressBar, QCheckBox
+    QStatusBar, QProgressBar, QCheckBox, QDialog, QRadioButton, QButtonGroup
 )
 from PyQt5.QtCore import QTimer, pyqtSignal, QThread, Qt
 from PyQt5.QtGui import QFont, QPalette, QColor
@@ -29,6 +29,85 @@ import matplotlib.pyplot as plt
 # Add parent directory to path to import can_runner
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from can_runner import HighPerformanceODriveSystem
+
+
+class NodeSelectionDialog(QDialog):
+    """Dialog for selecting ODrive node when multiple are detected"""
+    
+    def __init__(self, nodes, parent=None):
+        super().__init__(parent)
+        self.nodes = nodes
+        self.selected_node_id = None
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize the dialog UI"""
+        self.setWindowTitle("Select ODrive Node")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("Multiple ODrive nodes detected on CAN bus")
+        title.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title)
+        
+        # Info label
+        info = QLabel("Please select which ODrive to connect to:")
+        layout.addWidget(info)
+        
+        # Radio buttons for node selection
+        self.button_group = QButtonGroup()
+        
+        axis_state_names = {
+            0: "UNDEFINED",
+            1: "IDLE", 
+            3: "FULL_CALIBRATION",
+            8: "CLOSED_LOOP_CONTROL"
+        }
+        
+        for node in self.nodes:
+            state_name = axis_state_names.get(node['axis_state'], f"STATE_{node['axis_state']}")
+            error_str = "✅ No errors" if node['axis_error'] == 0 else f"⚠️ Error: 0x{node['axis_error']:08X}"
+            
+            radio = QRadioButton(f"Node ID {node['node_id']}: {state_name}, {error_str}")
+            radio.setProperty("node_id", node['node_id'])
+            self.button_group.addButton(radio)
+            layout.addWidget(radio)
+        
+        # Set first radio button as default selection
+        if self.button_group.buttons():
+            self.button_group.buttons()[0].setChecked(True)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        btn_ok = QPushButton("Connect")
+        btn_ok.clicked.connect(self.accept)
+        btn_ok.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
+        
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_cancel.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 8px;")
+        
+        button_layout.addWidget(btn_ok)
+        button_layout.addWidget(btn_cancel)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def accept(self):
+        """Handle OK button - get selected node"""
+        checked_button = self.button_group.checkedButton()
+        if checked_button:
+            self.selected_node_id = checked_button.property("node_id")
+        super().accept()
+    
+    def get_selected_node_id(self):
+        """Return the selected node ID"""
+        return self.selected_node_id
+
 
 # Import error handler for human-readable error descriptions
 import importlib.util
@@ -628,34 +707,113 @@ class ODriveGUI(QMainWindow):
     
     # Connection and initialization
     async def connect_odrive_async(self):
-        """Connect to ODrive asynchronously"""
+        """Connect to ODrive asynchronously with node discovery"""
         try:
             self.log_to_console("🔌 Connecting to ODrive...")
-            self.system = HighPerformanceODriveSystem(node_id=0)
+            self.log_to_console("🔍 Scanning for ODrive nodes...")
             
-            success = await self.system.initialize()
+            # Perform node discovery first
+            from modules.simple_can_manager import create_simple_can_manager
+            from utils.node_discovery import NodeDiscovery
             
-            if success:
-                self.log_to_console("✅ Connected to ODrive successfully")
-                self.statusBar.showMessage("Connected")
-                self.lbl_connected.setText("✅")
+            # Create temporary CAN manager for discovery
+            temp_can = create_simple_can_manager(node_id=0)
+            
+            try:
+                if not await temp_can.initialize():
+                    self.log_to_console("❌ Failed to initialize CAN bus")
+                    QMessageBox.critical(self, "Connection Error", "Failed to initialize CAN bus")
+                    return
                 
-                # Enable controls
-                self.btn_connect.setEnabled(False)
-                self.btn_arm.setEnabled(True)
-                self.btn_disarm.setEnabled(True)
-                self.btn_stop.setEnabled(True)
-                self.btn_load_config.setEnabled(True)
-                self.btn_save_config.setEnabled(True)
+                discovery = NodeDiscovery(temp_can.bus)
+                nodes = await discovery.discover_nodes(timeout=3.0)
                 
-                # Start telemetry updates
-                self.telemetry_timer.start(100)  # Update every 100ms
-            else:
-                self.log_to_console("❌ Failed to connect to ODrive")
-                QMessageBox.critical(self, "Connection Error", "Failed to initialize ODrive system")
+                selected_node_id = None
                 
+                if len(nodes) == 0:
+                    # No nodes found - alert user and fall back to node ID 0
+                    self.log_to_console("⚠️ No ODrives discovered via heartbeat messages")
+                    self.log_to_console("⚠️ FALLING BACK to default node ID: 0")
+                    self.log_to_console("💡 Make sure ODrive is powered and CAN bus is connected")
+                    
+                    reply = QMessageBox.warning(
+                        self, 
+                        "No ODrives Detected",
+                        "No ODrive nodes were detected on the CAN bus.\n\n"
+                        "Possible causes:\n"
+                        "• ODrive is not powered on\n"
+                        "• CAN bus is not connected properly\n"
+                        "• Heartbeat is disabled on ODrive\n\n"
+                        "Do you want to continue with default node ID 0?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        selected_node_id = 0
+                    else:
+                        self.log_to_console("❌ Connection cancelled by user")
+                        await temp_can.shutdown()
+                        return
+                        
+                elif len(nodes) == 1:
+                    # Single node found - use it automatically
+                    selected_node_id = nodes[0]['node_id']
+                    self.log_to_console(f"✅ Discovered ODrive at node ID {selected_node_id}")
+                    
+                else:
+                    # Multiple nodes found - show selection dialog
+                    self.log_to_console(f"📋 Found {len(nodes)} ODrive nodes")
+                    await temp_can.shutdown()  # Close temp connection before showing dialog
+                    
+                    # Show node selection dialog (blocks until user selects)
+                    dialog = NodeSelectionDialog(nodes, self)
+                    if dialog.exec_() == QDialog.Accepted:
+                        selected_node_id = dialog.get_selected_node_id()
+                        self.log_to_console(f"✅ Selected Node ID {selected_node_id}")
+                    else:
+                        self.log_to_console("❌ Connection cancelled by user")
+                        return
+                    
+                    # Reinitialize temp_can for proper cleanup path
+                    temp_can = create_simple_can_manager(node_id=0)
+                    await temp_can.initialize()
+                
+            finally:
+                # Always cleanup temporary CAN manager
+                await temp_can.shutdown()
+            
+            # Now connect to the selected node
+            if selected_node_id is not None:
+                self.log_to_console(f"🔗 Connecting to Node ID {selected_node_id}...")
+                self.system = HighPerformanceODriveSystem(node_id=selected_node_id)
+                
+                # Initialize with auto_discover=False since we already selected the node
+                success = await self.system.initialize(auto_discover=False)
+                
+                if success:
+                    self.log_to_console(f"✅ Connected to ODrive Node {selected_node_id} successfully")
+                    self.statusBar.showMessage(f"Connected - Node {selected_node_id}")
+                    self.lbl_connected.setText("✅")
+                    
+                    # Enable controls
+                    self.btn_connect.setEnabled(False)
+                    self.btn_arm.setEnabled(True)
+                    self.btn_disarm.setEnabled(True)
+                    self.btn_stop.setEnabled(True)
+                    self.btn_load_config.setEnabled(True)
+                    self.btn_save_config.setEnabled(True)
+                    
+                    # Start telemetry updates
+                    self.telemetry_timer.start(100)  # Update every 100ms
+                else:
+                    self.log_to_console("❌ Failed to connect to ODrive")
+                    QMessageBox.critical(self, "Connection Error", "Failed to initialize ODrive system")
+                    
         except Exception as e:
             self.log_to_console(f"❌ Connection error: {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Connection Error", str(e))
     
     def connect_odrive(self):

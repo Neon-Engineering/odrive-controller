@@ -666,17 +666,94 @@ class HighPerformanceODriveSystem:
         self.logging_active = False
         self.desired_control_mode = "position"  # Default to position mode
     
-    async def initialize(self) -> bool:
+    async def initialize(self, auto_discover: bool = True) -> bool:
         """Initialize all subsystems"""
         print(f"🚀 Initializing {SOFTWARE_NAME} v{SOFTWARE_VERSION}")
         print("="*60)
         
         try:
-            # 1. Initialize CAN Manager
+            # 1. Initialize CAN Manager (with temporary node_id for discovery)
             print("1️⃣ Initializing CAN communication...")
             self.can_manager = create_simple_can_manager(node_id=self.node_id)
             if not await self.can_manager.initialize():
                 return False
+            
+            # 1a. Auto-discover node ID if requested and node_id is default (0)
+            if auto_discover and self.node_id == 0:
+                print("\n🔍 Auto-discovering ODrive node ID...")
+                from utils.node_discovery import NodeDiscovery
+                
+                discovery = NodeDiscovery(self.can_manager.bus)
+                nodes = await discovery.discover_nodes(timeout=3.0)
+                
+                if len(nodes) == 1:
+                    discovered_id = nodes[0]['node_id']
+                    if discovered_id != self.node_id:
+                        print(f"📡 Discovered ODrive at node ID {discovered_id}")
+                        print(f"   Switching from default node ID {self.node_id} to {discovered_id}")
+                        self.node_id = discovered_id
+                        
+                        # Reinitialize CAN manager with correct node ID
+                        print("🔄 Reinitializing CAN manager with discovered node ID...")
+                        await self.can_manager.shutdown()
+                        self.can_manager = create_simple_can_manager(node_id=self.node_id)
+                        if not await self.can_manager.initialize():
+                            return False
+                elif len(nodes) > 1:
+                    # Multiple ODrives found - prompt user to select
+                    print(f"\n📋 Multiple ODrives detected on CAN bus:")
+                    print("-" * 50)
+                    
+                    axis_state_names = {
+                        0: "UNDEFINED",
+                        1: "IDLE", 
+                        3: "FULL_CALIBRATION",
+                        8: "CLOSED_LOOP_CONTROL"
+                    }
+                    
+                    for i, node in enumerate(nodes):
+                        state_name = axis_state_names.get(node['axis_state'], f"STATE_{node['axis_state']}")
+                        error_str = "✅ No errors" if node['axis_error'] == 0 else f"⚠️ Error: 0x{node['axis_error']:08X}"
+                        print(f"  [{i+1}] Node ID {node['node_id']}: {state_name}, {error_str}")
+                    
+                    print("-" * 50)
+                    
+                    # Prompt user to select
+                    while True:
+                        try:
+                            selection = input(f"Select ODrive [1-{len(nodes)}] or 'q' to quit: ").strip().lower()
+                            
+                            if selection == 'q':
+                                print("❌ User cancelled initialization")
+                                return False
+                            
+                            idx = int(selection) - 1
+                            if 0 <= idx < len(nodes):
+                                self.node_id = nodes[idx]['node_id']
+                                print(f"✅ Selected Node ID {self.node_id}")
+                                
+                                # Reinitialize CAN manager with selected node ID
+                                print("� Reinitializing CAN manager with selected node ID...")
+                                await self.can_manager.shutdown()
+                                self.can_manager = create_simple_can_manager(node_id=self.node_id)
+                                if not await self.can_manager.initialize():
+                                    return False
+                                break
+                            else:
+                                print(f"❌ Invalid selection. Please enter 1-{len(nodes)}")
+                        except ValueError:
+                            print(f"❌ Invalid input. Please enter 1-{len(nodes)} or 'q'")
+                        except (EOFError, KeyboardInterrupt):
+                            print("\n❌ User cancelled initialization")
+                            return False
+                            
+                elif len(nodes) == 0:
+                    print(f"⚠️ No ODrives discovered via heartbeat messages")
+                    print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
+                    print("💡 Make sure ODrive is powered and CAN bus is connected")
+                    print("💡 If ODrive is present, you can manually specify node ID with --node-id <id>")
+            
+            print(f"✅ Using node ID: {self.node_id}\n")
             
             # 2. Initialize Telemetry Manager
             print("2️⃣ Initializing telemetry...")
@@ -961,6 +1038,7 @@ class HighPerformanceODriveSystem:
         print("  osc <amp> <freq> [time] [phase] - Oscillate with optional phase [shortcut: -o]")
         print("  stop             - Stop motion & return to idle   [shortcut: -s]")
         print("  idle             - Return motor to idle state")
+        print("  scan             - Scan CAN bus for ODrive nodes")
         print("  traj load <file> - Load trajectory file")
         print("  traj play        - Start trajectory playback")
         print("  traj pause       - Pause/resume trajectory")
@@ -1326,6 +1404,9 @@ class HighPerformanceODriveSystem:
                 else:
                     print("Usage: config load <file.json> | config save")
             
+            elif cmd == "scan":
+                await self._scan_nodes()
+            
             elif cmd == "calibrate" or cmd == "cal":
                 # Full calibration by default
                 full = True
@@ -1358,6 +1439,57 @@ class HighPerformanceODriveSystem:
             print(f"❌ Invalid parameters: {e}")
         except Exception as e:
             print(f"❌ Command error: {e}")
+    
+    async def _scan_nodes(self):
+        """Scan CAN bus for ODrive nodes"""
+        from utils.node_discovery import NodeDiscovery
+        
+        print("\n🔍 Scanning CAN bus for ODrive nodes...")
+        print("   Listening for heartbeat messages (3 seconds)...")
+        
+        try:
+            discovery = NodeDiscovery(
+                can_channel=self.can_manager.channel,
+                bustype=self.can_manager.bustype
+            )
+            
+            nodes = await discovery.discover_nodes(timeout=3.0)
+            
+            if nodes:
+                print(f"\n✅ Found {len(nodes)} ODrive node(s):")
+                print("-" * 60)
+                for node in nodes:
+                    axis_state_names = {
+                        0: "UNDEFINED",
+                        1: "IDLE", 
+                        3: "FULL_CALIBRATION",
+                        8: "CLOSED_LOOP_CONTROL"
+                    }
+                    state_name = axis_state_names.get(node['axis_state'], f"STATE_{node['axis_state']}")
+                    
+                    print(f"  Node ID: {node['node_id']}")
+                    print(f"    Axis State: {state_name} (0x{node['axis_state']:02X})")
+                    print(f"    Axis Error: 0x{node['axis_error']:08X}")
+                    
+                    # Optionally verify with encoder request
+                    print(f"    Verifying communication...", end=" ")
+                    verified = await discovery.verify_node(node['node_id'])
+                    if verified:
+                        print("✅ Responds to encoder requests")
+                    else:
+                        print("⚠️ No encoder response (may need calibration)")
+                    print()
+                
+                print("-" * 60)
+                print(f"💡 Current system is using node ID: {self.node_id}")
+            else:
+                print("\n❌ No ODrive nodes detected")
+                print("   • Check CAN bus connections")
+                print("   • Verify ODrive is powered on")
+                print("   • Ensure heartbeat is enabled on ODrive")
+            
+        except Exception as e:
+            print(f"\n❌ Scan failed: {e}")
     
     async def _show_status(self):
         """Show current system status"""
@@ -1862,17 +1994,72 @@ class HighPerformanceODriveSystem:
 
 async def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description=f"{SOFTWARE_NAME} v{SOFTWARE_VERSION}")
-    parser.add_argument('--node-id', type=int, default=0, help='ODrive node ID (default: 0)')
+    parser = argparse.ArgumentParser(
+        description=f"{SOFTWARE_NAME} v{SOFTWARE_VERSION}",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Auto-discover ODrive node ID (default)
+  python can_runner.py
+  
+  # Specify a particular node ID
+  python can_runner.py --node-id 1
+  
+  # Disable auto-discovery
+  python can_runner.py --node-id 0 --no-auto-discover
+  
+  # Scan for ODrives without starting controller
+  python can_runner.py --scan-only
+        """
+    )
+    parser.add_argument('--node-id', type=int, default=0, 
+                       help='ODrive node ID (default: 0, auto-discover if single ODrive found)')
+    parser.add_argument('--no-auto-discover', action='store_true',
+                       help='Disable automatic node ID discovery')
+    parser.add_argument('--scan-only', action='store_true',
+                       help='Scan for ODrives and exit (diagnostic mode)')
     
     args = parser.parse_args()
+    
+    # Scan-only mode: just discover nodes and exit
+    if args.scan_only:
+        print(f"🔍 {SOFTWARE_NAME} v{SOFTWARE_VERSION} - Scan Mode")
+        print("="*60)
+        
+        from modules.simple_can_manager import create_simple_can_manager
+        from utils.node_discovery import NodeDiscovery
+        
+        # Create temporary CAN manager for scanning
+        temp_can = create_simple_can_manager(node_id=0)
+        try:
+            if await temp_can.initialize():
+                discovery = NodeDiscovery(temp_can.bus)
+                nodes = await discovery.discover_nodes(timeout=5.0)
+                
+                if nodes:
+                    print("\n📋 Testing encoder communication with each node:")
+                    for node in nodes:
+                        result = await discovery.request_encoder_and_wait(node['node_id'], timeout=2.0)
+                        if result is None:
+                            print(f"   💡 Node {node['node_id']} may need calibration\n")
+                
+                print("\n✅ Scan complete")
+            else:
+                print("❌ Failed to initialize CAN bus")
+        finally:
+            await temp_can.shutdown()
+        
+        return 0
+    
+    # Normal operation mode
+    auto_discover = not args.no_auto_discover
     
     # Create system
     system = HighPerformanceODriveSystem(node_id=args.node_id)
     
     try:
-        # Initialize
-        success = await system.initialize()
+        # Initialize (with auto-discovery if enabled)
+        success = await system.initialize(auto_discover=auto_discover)
         
         if not success:
             print("❌ Initialization failed")
