@@ -807,7 +807,18 @@ class ODriveGUI(QMainWindow):
                     return
                 
                 discovery = NodeDiscovery(temp_can.bus)
-                nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
+                self.log_to_console("🔍 Starting ODrive enumeration...")
+                
+                try:
+                    nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
+                    self.log_to_console(f"✅ Enumeration complete: {len(nodes)} addressed, {len(unaddressed)} unaddressed")
+                except Exception as e:
+                    self.log_to_console(f"❌ Enumeration failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    await temp_can.shutdown()
+                    QMessageBox.critical(self, "Enumeration Error", f"Failed to enumerate ODrives:\n{e}")
+                    return
                 
                 selected_node_id = None
                 

@@ -799,7 +799,18 @@ class ODriveGUI(QMainWindow):
                     return
                 
                 discovery = NodeDiscovery(temp_can.bus)
-                nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
+                self.log_to_console("🔍 Starting ODrive enumeration...")
+                
+                try:
+                    nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
+                    self.log_to_console(f"✅ Enumeration complete: {len(nodes)} addressed, {len(unaddressed)} unaddressed")
+                except Exception as e:
+                    self.log_to_console(f"❌ Enumeration failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    await temp_can.shutdown()
+                    QMessageBox.critical(self, "Enumeration Error", f"Failed to enumerate ODrives:\n{e}")
+                    return
                 
                 selected_node_id = None
                 
@@ -913,19 +924,6 @@ class ODriveGUI(QMainWindow):
                         return
                     
                     # Reinitialize temp_can for proper cleanup path
-                    temp_can = create_simple_can_manager(node_id=0)
-                    await temp_can.initialize()
-                    self.log_to_console(f"� Active scan found {len(nodes)} ODrive nodes")
-                    await temp_can.shutdown()
-                    
-                    dialog = NodeSelectionDialog(nodes, self)
-                    if dialog.exec_() == QDialog.Accepted:
-                        selected_node_id = dialog.get_selected_node_id()
-                        self.log_to_console(f"✅ Selected Node ID {selected_node_id}")
-                    else:
-                        self.log_to_console("❌ Connection cancelled by user")
-                        return
-                    
                     temp_can = create_simple_can_manager(node_id=0)
                     await temp_can.initialize()
                 

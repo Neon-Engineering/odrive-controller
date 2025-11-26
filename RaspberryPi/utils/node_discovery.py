@@ -125,22 +125,30 @@ class NodeDiscovery:
         
         self.discovered_devices = {}
         self.last_received_time = time.time()
+        start_time = time.time()
         
         # Start listening for responses
         iteration = 0
         max_iterations = int(timeout / DISCOVERY_MESSAGE_INTERVAL) + 5
+        absolute_timeout = timeout * 2  # Absolute maximum time
         
         while iteration < max_iterations:
+            # Safety check: absolute timeout
+            if (time.time() - start_time) > absolute_timeout:
+                print(f"⏱️ Absolute timeout reached after {absolute_timeout}s")
+                break
+            
+            iteration += 1
             iteration += 1
             
             # Send discovery request
             self._send_discovery_request()
             
-            # Listen for responses
+            # Listen for responses with async sleep to avoid blocking
             listen_start = time.time()
             while (time.time() - listen_start) < DISCOVERY_MESSAGE_INTERVAL:
                 try:
-                    msg = self.bus.recv(timeout=0.1)
+                    msg = self.bus.recv(timeout=0.01)  # Very short timeout to avoid blocking
                     
                     if msg:
                         result = self._parse_discovery_response(msg)
@@ -181,9 +189,14 @@ class NodeDiscovery:
                                     break
                         
                 except can.CanError:
+                    await asyncio.sleep(0.01)  # Yield to event loop
                     continue
                 except Exception:
+                    await asyncio.sleep(0.01)  # Yield to event loop
                     continue
+                
+                # Yield to event loop periodically to prevent GUI freezing
+                await asyncio.sleep(0.01)
             
             # Check if we should stop (no new responses for timeout period)
             if (time.time() - self.last_received_time) >= timeout:
