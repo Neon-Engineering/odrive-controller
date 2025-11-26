@@ -139,7 +139,6 @@ class NodeDiscovery:
                 break
             
             iteration += 1
-            iteration += 1
             
             # Send discovery request
             self._send_discovery_request()
