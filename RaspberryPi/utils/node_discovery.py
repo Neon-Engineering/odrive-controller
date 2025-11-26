@@ -95,7 +95,7 @@ class NodeDiscovery:
         
         return None
     
-    async def enumerate_odrives(self, timeout: float = 3.0) -> List[Dict]:
+    async def enumerate_odrives(self, timeout: float = 3.0) -> tuple[List[Dict], List[Dict]]:
         """
         Enumerate ODrives using the official ODrive discovery protocol.
         
@@ -106,17 +106,19 @@ class NodeDiscovery:
             timeout: How long to continue discovery after last response (seconds)
             
         Returns:
-            List of discovered nodes:
-            [
-                {
-                    'node_id': 0,
-                    'serial_number': 0x123456789ABC,
-                    'serial_number_str': '123456789ABC',
-                    'axis_state': 1,  # if available from heartbeat
-                    'axis_error': 0,  # if available from heartbeat
-                },
-                ...
-            ]
+            Tuple of (addressed_nodes, unaddressed_nodes):
+            - addressed_nodes: List of nodes with assigned node IDs
+            - unaddressed_nodes: List of nodes without assigned node IDs
+            
+            Each node dict contains:
+            {
+                'node_id': 0,  # or None for unaddressed
+                'serial_number': 0x123456789ABC,
+                'serial_number_str': '123456789ABC',
+                'axis_state': 1,  # if available from heartbeat
+                'axis_error': 0,  # if available from heartbeat
+                'unaddressed': False,  # True for unaddressed devices
+            }
         """
         print(f"🔍 Enumerating ODrives using official discovery protocol...")
         print(f"   Sending discovery requests every {DISCOVERY_MESSAGE_INTERVAL}s...")
@@ -187,17 +189,25 @@ class NodeDiscovery:
             if (time.time() - self.last_received_time) >= timeout:
                 break
         
-        # Convert to list format
-        nodes = []
+        # Convert to list format - separate addressed and unaddressed
+        addressed_nodes = []
+        unaddressed_nodes = []
+        
         for sn, device in self.discovered_devices.items():
-            if device['node_id'] is not None:  # Only include addressed nodes
-                nodes.append(device)
+            if device['node_id'] is not None:
+                addressed_nodes.append(device)
+            else:
+                # For unaddressed, use a special marker node_id
+                unaddressed_device = device.copy()
+                unaddressed_device['node_id'] = BROADCAST_NODE_ID  # 0x3F (63) indicates unaddressed
+                unaddressed_device['unaddressed'] = True
+                unaddressed_nodes.append(unaddressed_device)
         
-        nodes.sort(key=lambda x: x['node_id'])
+        addressed_nodes.sort(key=lambda x: x['node_id'])
         
-        if nodes:
-            print(f"\n✅ Enumeration found {len(nodes)} ODrive(s):")
-            for node in nodes:
+        if addressed_nodes:
+            print(f"\n✅ Enumeration found {len(addressed_nodes)} addressed ODrive(s):")
+            for node in addressed_nodes:
                 state_str = ""
                 if node['axis_state'] is not None:
                     state_name = self._get_state_name(node['axis_state'])
@@ -206,15 +216,16 @@ class NodeDiscovery:
                 print(f"   • Node ID {node['node_id']}: S/N {node['serial_number_str']}{state_str}")
         else:
             print("\n❌ No addressed ODrives found")
-            
-            # Check if there are unaddressed devices
-            unaddressed_count = sum(1 for device in self.discovered_devices.values() if device['node_id'] is None)
-            if unaddressed_count > 0:
-                print(f"⚠️ Found {unaddressed_count} unaddressed ODrive(s)")
-                print("💡 These ODrives need node IDs assigned")
-                print("💡 Use ODrive configuration tool or can_enumerate.py to assign addresses")
         
-        return nodes
+        # Report unaddressed devices
+        if unaddressed_nodes:
+            print(f"⚠️ Found {len(unaddressed_nodes)} unaddressed ODrive(s):")
+            for device in unaddressed_nodes:
+                print(f"   • S/N {device['serial_number_str']} (needs node ID assignment)")
+            print("💡 Use ODrive configuration tool or 'odrivetool' to assign node IDs")
+        
+        # Return tuple of (addressed, unaddressed) nodes
+        return addressed_nodes, unaddressed_nodes
     
     async def discover_nodes(self, timeout: float = 3.0, max_node_id: int = 63) -> List[Dict]:
         """

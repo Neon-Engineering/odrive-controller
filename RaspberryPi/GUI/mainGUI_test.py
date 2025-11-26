@@ -731,26 +731,48 @@ class ODriveGUI(QMainWindow):
                     return
                 
                 discovery = NodeDiscovery(temp_can.bus)
-                nodes = await discovery.enumerate_odrives(timeout=3.0)
+                nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
                 
                 selected_node_id = None
                 
                 if len(nodes) == 0:
-                    # No nodes found - alert user and fall back
-                    self.log_to_console("⚠️ No ODrives discovered via enumeration protocol")
+                    # No nodes found - check if there are unaddressed devices
+                    self.log_to_console("⚠️ No addressed ODrives discovered via enumeration protocol")
+                    
+                    # Build message based on whether unaddressed devices were found
+                    if unaddressed:
+                        self.log_to_console(f"⚠️ Found {len(unaddressed)} unaddressed ODrive(s)")
+                        for device in unaddressed:
+                            self.log_to_console(f"   • S/N {device['serial_number_str']}")
+                        
+                        message = (
+                            f"Found {len(unaddressed)} ODrive(s) but they are unaddressed.\n\n"
+                            "These ODrives need node IDs assigned before they can be controlled.\n\n"
+                            "To assign node IDs:\n"
+                            "1. Use 'odrivetool' command line tool\n"
+                            "2. Connect via USB and set: axis.config.can.node_id = <id>\n"
+                            "3. Save config and reboot ODrive\n\n"
+                            "Do you want to continue with default node ID 0 anyway?"
+                        )
+                        title = "Unaddressed ODrives Detected"
+                    else:
+                        message = (
+                            "No ODrive nodes were detected on the CAN bus.\n\n"
+                            "Possible causes:\n"
+                            "• ODrive is not powered on\n"
+                            "• CAN bus is not connected properly\n"
+                            "• Wrong CAN bitrate configuration\n"
+                            "• ODrive not configured for CAN communication\n\n"
+                            "Do you want to continue with default node ID 0?"
+                        )
+                        title = "No ODrives Detected"
+                    
                     self.log_to_console("⚠️ FALLING BACK to default node ID: 0")
                     
                     reply = QMessageBox.warning(
                         self, 
-                        "No ODrives Detected",
-                        "No ODrive nodes were detected on the CAN bus.\n\n"
-                        "Possible causes:\n"
-                        "• ODrive is not powered on\n"
-                        "• CAN bus is not connected properly\n"
-                        "• Wrong CAN bitrate configuration\n"
-                        "• ODrive not configured for CAN communication\n"
-                        "• ODrive may be unaddressed (needs node ID assignment)\n\n"
-                        "Do you want to continue with default node ID 0?",
+                        title,
+                        message,
                         QMessageBox.Yes | QMessageBox.No,
                         QMessageBox.No
                     )

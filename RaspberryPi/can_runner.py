@@ -684,7 +684,7 @@ class HighPerformanceODriveSystem:
                 from utils.node_discovery import NodeDiscovery
                 
                 discovery = NodeDiscovery(self.can_manager.bus)
-                nodes = await discovery.enumerate_odrives(timeout=3.0)
+                nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
                 
                 if len(nodes) == 1:
                     discovered_id = nodes[0]['node_id']
@@ -749,13 +749,18 @@ class HighPerformanceODriveSystem:
                             
                 elif len(nodes) == 0:
                     # No ODrives found - fall back to default node ID
-                    print(f"⚠️ No ODrives discovered via enumeration protocol")
+                    print(f"⚠️ No addressed ODrives discovered via enumeration protocol")
+                    if unaddressed:
+                        print(f"⚠️ Found {len(unaddressed)} unaddressed ODrive(s):")
+                        for device in unaddressed:
+                            print(f"   • S/N {device['serial_number_str']}")
+                        print("💡 These ODrives need node IDs assigned first")
+                        print("💡 Use 'odrivetool' or ODrive GUI to configure node IDs")
                     print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
                     print("💡 Possible issues:")
                     print("   • ODrive not powered on")
                     print("   • CAN bus not connected properly")
                     print("   • Wrong CAN bitrate")
-                    print("   • ODrive may be unaddressed (needs node ID assignment)")
                     print("💡 You can manually specify node ID with --node-id <id>")
             
             print(f"✅ Using node ID: {self.node_id}\n")
@@ -1450,18 +1455,12 @@ class HighPerformanceODriveSystem:
         from utils.node_discovery import NodeDiscovery
         
         print("\n🔍 Scanning CAN bus for ODrive nodes...")
-        print("   Listening for heartbeat messages (3 seconds)...")
+        print("   Using official enumeration protocol...")
         
         try:
             discovery = NodeDiscovery(self.can_manager.bus)
             
-            nodes = await discovery.discover_nodes(timeout=3.0)
-            
-            if not nodes:
-                # Try active scan if passive discovery finds nothing
-                print("\n⚠️ No nodes found via heartbeat messages")
-                print("🔍 Attempting active scan (probing all node IDs)...")
-                nodes = await discovery.active_scan_nodes(timeout_per_node=0.2, max_node_id=63)
+            nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
             
             if nodes:
                 print(f"\n✅ Found {len(nodes)} ODrive node(s):")
@@ -1495,11 +1494,21 @@ class HighPerformanceODriveSystem:
                 print("-" * 60)
                 print(f"💡 Current system is using node ID: {self.node_id}")
             else:
-                print("\n❌ No ODrive nodes detected (passive + active scan)")
-                print("   • Check CAN bus connections")
-                print("   • Verify ODrive is powered on")
-                print("   • Verify correct CAN bitrate (usually 250kbps or 500kbps)")
-                print("   • Ensure ODrive is configured for CAN communication")
+                print("\n❌ No addressed ODrive nodes detected")
+                if unaddressed:
+                    print(f"\n⚠️ Found {len(unaddressed)} unaddressed ODrive(s):")
+                    for device in unaddressed:
+                        print(f"   • S/N {device['serial_number_str']}")
+                    print("\n💡 These ODrives need node IDs assigned first:")
+                    print("   1. Use 'odrivetool' command line tool")
+                    print("   2. Or use ODrive GUI application")
+                    print("   3. Set axis.config.can.node_id = <desired_id>")
+                    print("   4. Save config and reboot")
+                else:
+                    print("   • Check CAN bus connections")
+                    print("   • Verify ODrive is powered on")
+                    print("   • Verify correct CAN bitrate (usually 250kbps or 500kbps)")
+                    print("   • Ensure ODrive is configured for CAN communication")
             
         except Exception as e:
             print(f"\n❌ Scan failed: {e}")
