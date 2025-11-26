@@ -697,6 +697,81 @@ class ODriveGUI(QMainWindow):
                 border-radius: 3px;
             }
         """)
+    async def _assign_node_id_dialog(self, bus, unaddressed_devices):
+        """Show dialog to assign node ID to an unaddressed ODrive"""
+        from utils.node_discovery import NodeDiscovery
+        from PyQt5.QtWidgets import QInputDialog
+        
+        # If only one device, skip selection
+        if len(unaddressed_devices) == 1:
+            selected_device = unaddressed_devices[0]
+        else:
+            # Let user select which device to assign
+            items = [f"S/N {dev['serial_number_str']}" for dev in unaddressed_devices]
+            item, ok = QInputDialog.getItem(
+                self,
+                "Select ODrive",
+                "Select ODrive to assign node ID:",
+                items,
+                0,
+                False
+            )
+            if not ok:
+                return False
+            
+            idx = items.index(item)
+            selected_device = unaddressed_devices[idx]
+        
+        self.log_to_console(f"📋 Selected ODrive S/N {selected_device['serial_number_str']}")
+        
+        # Get node ID from user
+        node_id, ok = QInputDialog.getInt(
+            self,
+            "Assign Node ID",
+            f"Enter node ID for ODrive S/N {selected_device['serial_number_str']}:",
+            value=1,
+            min=0,
+            max=62,
+            step=1
+        )
+        
+        if not ok:
+            return False
+        
+        self.log_to_console(f"🔧 Assigning node ID {node_id} to S/N {selected_device['serial_number_str']}...")
+        
+        # Perform assignment
+        discovery = NodeDiscovery(bus)
+        success = await discovery.assign_node_id(
+            serial_number=selected_device['serial_number'],
+            new_node_id=node_id,
+            timeout=3.0
+        )
+        
+        if success:
+            self.log_to_console(f"✅ Successfully assigned node ID {node_id}")
+            QMessageBox.information(
+                self,
+                "Assignment Successful",
+                f"Node ID {node_id} has been assigned to the ODrive.\n\n"
+                "⚠️ NOTE: This assignment is temporary (RAM only)\n\n"
+                "To make it permanent:\n"
+                "1. Connect via USB\n"
+                "2. Run: odrivetool\n"
+                "3. Set: odrv0.axis0.config.can.node_id = " + str(node_id) + "\n"
+                "4. Save: odrv0.save_configuration()\n"
+                "5. Reboot: odrv0.reboot()"
+            )
+            return True
+        else:
+            self.log_to_console(f"❌ Failed to assign node ID")
+            QMessageBox.warning(
+                self,
+                "Assignment Failed",
+                "Failed to assign node ID to the ODrive.\n\n"
+                "You may need to assign via USB using odrivetool."
+            )
+            return False
     
     # Connection and initialization
     async def connect_odrive_async(self):
@@ -762,20 +837,61 @@ class ODriveGUI(QMainWindow):
                     
                     self.log_to_console("⚠️ FALLING BACK to default node ID: 0")
                     
-                    reply = QMessageBox.warning(
-                        self, 
-                        title,
-                        message,
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No
-                    )
-                    
-                    if reply == QMessageBox.Yes:
-                        selected_node_id = 0
+                    # For unaddressed devices, offer assignment option
+                    if unaddressed:
+                        msgBox = QMessageBox(self)
+                        msgBox.setIcon(QMessageBox.Warning)
+                        msgBox.setWindowTitle(title)
+                        msgBox.setText(message)
+                        
+                        assign_btn = msgBox.addButton("Assign Node ID", QMessageBox.ActionRole)
+                        continue_btn = msgBox.addButton("Continue with ID 0", QMessageBox.YesRole)
+                        cancel_btn = msgBox.addButton("Cancel", QMessageBox.NoRole)
+                        
+                        msgBox.setDefaultButton(cancel_btn)
+                        msgBox.exec_()
+                        
+                        clicked_button = msgBox.clickedButton()
+                        
+                        if clicked_button == assign_btn:
+                            # Show assignment dialog
+                            assigned = await self._assign_node_id_dialog(temp_can.bus, unaddressed)
+                            if assigned:
+                                # Re-enumerate to get the newly assigned device
+                                nodes, _ = await discovery.enumerate_odrives(timeout=2.0)
+                                if len(nodes) == 1:
+                                    selected_node_id = nodes[0]['node_id']
+                                    self.log_to_console(f"✅ Using newly assigned node ID {selected_node_id}")
+                                else:
+                                    self.log_to_console("⚠️ Assignment completed but enumeration failed")
+                                    await temp_can.shutdown()
+                                    return
+                            else:
+                                self.log_to_console("❌ Node ID assignment cancelled or failed")
+                                await temp_can.shutdown()
+                                return
+                        elif clicked_button == continue_btn:
+                            selected_node_id = 0
+                        else:
+                            self.log_to_console("❌ Connection cancelled by user")
+                            await temp_can.shutdown()
+                            return
                     else:
-                        self.log_to_console("❌ Connection cancelled by user")
-                        await temp_can.shutdown()
-                        return
+                        # No unaddressed devices - standard Yes/No dialog
+                        reply = QMessageBox.warning(
+                            self, 
+                            title,
+                            message,
+                            QMessageBox.Yes | QMessageBox.No,
+                            QMessageBox.No
+                        )
+                        
+                        if reply == QMessageBox.Yes:
+                            selected_node_id = 0
+                        else:
+                            self.log_to_console("❌ Connection cancelled by user")
+                            await temp_can.shutdown()
+                            return
 
                 elif len(nodes) == 1:
                     # Single node found - use it automatically

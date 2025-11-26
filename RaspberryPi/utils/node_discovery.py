@@ -227,6 +227,78 @@ class NodeDiscovery:
         # Return tuple of (addressed, unaddressed) nodes
         return addressed_nodes, unaddressed_nodes
     
+    async def assign_node_id(self, serial_number: int, new_node_id: int, timeout: float = 2.0) -> bool:
+        """
+        Assign a node ID to an unaddressed ODrive via CAN.
+        
+        This uses CMD 0x06 (ADDRESS_CMD) to set the node ID for a specific ODrive
+        identified by its serial number. The ODrive must be unaddressed or addressed
+        as broadcast (0x3F).
+        
+        Args:
+            serial_number: 48-bit serial number of the target ODrive
+            new_node_id: Node ID to assign (0-62)
+            timeout: How long to wait for confirmation (seconds)
+            
+        Returns:
+            True if assignment was successful, False otherwise
+        """
+        if new_node_id < 0 or new_node_id > MAX_NODE_ID:
+            print(f"❌ Invalid node ID {new_node_id}. Must be 0-{MAX_NODE_ID}")
+            return False
+        
+        print(f"🔧 Assigning node ID {new_node_id} to ODrive S/N {self._sn_str(serial_number)}...")
+        
+        # Build the assignment message
+        # Format: [new_node_id, serial_number (6 bytes, little-endian), checksum (1 byte)]
+        serial_bytes = serial_number.to_bytes(6, byteorder='little')
+        
+        # Calculate checksum: XOR of all bytes
+        checksum = new_node_id
+        for byte in serial_bytes:
+            checksum ^= byte
+        
+        # Construct data payload
+        data = bytes([new_node_id]) + serial_bytes + bytes([checksum])
+        
+        # Send to broadcast address
+        msg = can.Message(
+            arbitration_id=(BROADCAST_NODE_ID << 5) | ADDRESS_CMD,
+            data=data,
+            is_extended_id=False,
+            is_remote_frame=False
+        )
+        
+        try:
+            self.bus.send(msg)
+            print(f"   📤 Sent assignment command")
+        except can.CanError as e:
+            print(f"❌ Failed to send assignment: {e}")
+            return False
+        
+        # Wait for confirmation by checking if device responds with new node ID
+        await asyncio.sleep(0.5)  # Give ODrive time to process
+        
+        # Verify by enumerating again
+        print(f"   🔍 Verifying assignment...")
+        addressed, unaddressed = await self.enumerate_odrives(timeout=timeout)
+        
+        # Check if the device is now addressed with the correct node ID
+        for device in addressed:
+            if device['serial_number'] == serial_number and device['node_id'] == new_node_id:
+                print(f"✅ Successfully assigned node ID {new_node_id} to S/N {self._sn_str(serial_number)}")
+                return True
+        
+        # Check if still unaddressed
+        for device in unaddressed:
+            if device['serial_number'] == serial_number:
+                print(f"⚠️ Assignment may have failed - device still unaddressed")
+                print(f"💡 The assignment is not persistent - save config on ODrive to make it permanent")
+                return False
+        
+        print(f"⚠️ Could not verify assignment - device not found in enumeration")
+        return False
+    
     async def discover_nodes(self, timeout: float = 3.0, max_node_id: int = 63) -> List[Dict]:
         """
         Discover active ODrive nodes on the CAN bus

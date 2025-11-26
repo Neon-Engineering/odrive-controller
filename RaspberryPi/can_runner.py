@@ -1049,6 +1049,7 @@ class HighPerformanceODriveSystem:
         print("  stop             - Stop motion & return to idle   [shortcut: -s]")
         print("  idle             - Return motor to idle state")
         print("  scan             - Scan CAN bus for ODrive nodes")
+        print("  assign           - Assign node ID to unaddressed ODrive")
         print("  traj load <file> - Load trajectory file")
         print("  traj play        - Start trajectory playback")
         print("  traj pause       - Pause/resume trajectory")
@@ -1417,6 +1418,9 @@ class HighPerformanceODriveSystem:
             elif cmd == "scan":
                 await self._scan_nodes()
             
+            elif cmd == "assign":
+                await self._assign_node_id()
+            
             elif cmd == "calibrate" or cmd == "cal":
                 # Full calibration by default
                 full = True
@@ -1512,6 +1516,95 @@ class HighPerformanceODriveSystem:
             
         except Exception as e:
             print(f"\n❌ Scan failed: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def _assign_node_id(self):
+        """Assign node ID to an unaddressed ODrive"""
+        from utils.node_discovery import NodeDiscovery
+        
+        print("\n🔍 Scanning for ODrives...")
+        
+        try:
+            discovery = NodeDiscovery(self.can_manager.bus)
+            nodes, unaddressed = await discovery.enumerate_odrives(timeout=3.0)
+            
+            if not unaddressed:
+                print("✅ No unaddressed ODrives found")
+                if nodes:
+                    print(f"   Found {len(nodes)} already addressed ODrive(s)")
+                return
+            
+            print(f"\n📋 Found {len(unaddressed)} unaddressed ODrive(s):")
+            print("-" * 60)
+            for idx, device in enumerate(unaddressed, 1):
+                print(f"  {idx}. Serial Number: {device['serial_number_str']}")
+            print("-" * 60)
+            
+            # Get user selection
+            if len(unaddressed) == 1:
+                selected_device = unaddressed[0]
+                print(f"\n✅ Auto-selecting the only unaddressed ODrive: {selected_device['serial_number_str']}")
+            else:
+                try:
+                    selection = input(f"\nSelect ODrive to assign node ID (1-{len(unaddressed)}) or 'q' to cancel: ").strip()
+                    if selection.lower() == 'q':
+                        print("❌ Assignment cancelled")
+                        return
+                    
+                    idx = int(selection) - 1
+                    if idx < 0 or idx >= len(unaddressed):
+                        print(f"❌ Invalid selection")
+                        return
+                    
+                    selected_device = unaddressed[idx]
+                except (ValueError, EOFError, KeyboardInterrupt):
+                    print("\n❌ Assignment cancelled")
+                    return
+            
+            # Get desired node ID
+            print(f"\n📋 Currently addressed node IDs: {[n['node_id'] for n in nodes] if nodes else 'None'}")
+            try:
+                node_id_input = input(f"Enter node ID to assign (0-62) or 'q' to cancel: ").strip()
+                if node_id_input.lower() == 'q':
+                    print("❌ Assignment cancelled")
+                    return
+                
+                new_node_id = int(node_id_input)
+                
+                # Check if node ID is already in use
+                if any(n['node_id'] == new_node_id for n in nodes):
+                    print(f"⚠️ Warning: Node ID {new_node_id} is already in use!")
+                    confirm = input("Continue anyway? (y/n): ").strip().lower()
+                    if confirm != 'y':
+                        print("❌ Assignment cancelled")
+                        return
+                
+            except (ValueError, EOFError, KeyboardInterrupt):
+                print("\n❌ Assignment cancelled")
+                return
+            
+            # Perform assignment
+            success = await discovery.assign_node_id(
+                serial_number=selected_device['serial_number'],
+                new_node_id=new_node_id,
+                timeout=3.0
+            )
+            
+            if success:
+                print(f"\n✅ Node ID assignment successful!")
+                print(f"⚠️ NOTE: This assignment is temporary (stored in RAM)")
+                print(f"💡 To make it permanent, connect via USB and run:")
+                print(f"   odrivetool")
+                print(f"   odrv0.axis0.config.can.node_id = {new_node_id}")
+                print(f"   odrv0.save_configuration()")
+                print(f"   odrv0.reboot()")
+            else:
+                print(f"\n❌ Node ID assignment failed")
+                print(f"💡 You may need to assign via USB using odrivetool")
+                
+        except Exception as e:
+            print(f"\n❌ Assignment failed: {e}")
             import traceback
             traceback.print_exc()
     
