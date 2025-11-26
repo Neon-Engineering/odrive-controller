@@ -749,9 +749,72 @@ class HighPerformanceODriveSystem:
                             
                 elif len(nodes) == 0:
                     print(f"⚠️ No ODrives discovered via heartbeat messages")
-                    print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
-                    print("💡 Make sure ODrive is powered and CAN bus is connected")
-                    print("💡 If ODrive is present, you can manually specify node ID with --node-id <id>")
+                    print("🔍 Attempting active scan (probing all node IDs)...")
+                    
+                    # Try active scanning as fallback
+                    nodes = await discovery.active_scan_nodes(timeout_per_node=0.2, max_node_id=63)
+                    
+                    if len(nodes) == 1:
+                        discovered_id = nodes[0]['node_id']
+                        print(f"📡 Active scan found ODrive at node ID {discovered_id}")
+                        print(f"   Switching from default node ID {self.node_id} to {discovered_id}")
+                        self.node_id = discovered_id
+                        
+                        # Reinitialize CAN manager with correct node ID
+                        print("🔄 Reinitializing CAN manager with discovered node ID...")
+                        await self.can_manager.shutdown()
+                        self.can_manager = create_simple_can_manager(node_id=self.node_id)
+                        if not await self.can_manager.initialize():
+                            return False
+                    elif len(nodes) > 1:
+                        # Multiple ODrives found via active scan - prompt user to select
+                        print(f"\n📋 Active scan found {len(nodes)} ODrives:")
+                        print("-" * 50)
+                        
+                        for i, node in enumerate(nodes):
+                            if node['axis_state'] is not None:
+                                state_name = axis_state_names.get(node['axis_state'], f"STATE_{node['axis_state']}")
+                                error_str = "✅ No errors" if node['axis_error'] == 0 else f"⚠️ Error: 0x{node['axis_error']:08X}"
+                                print(f"  [{i+1}] Node ID {node['node_id']}: {state_name}, {error_str}")
+                            else:
+                                print(f"  [{i+1}] Node ID {node['node_id']}: Responds to encoder requests")
+                        
+                        print("-" * 50)
+                        
+                        # Prompt user to select
+                        while True:
+                            try:
+                                selection = input(f"Select ODrive [1-{len(nodes)}] or 'q' to quit: ").strip().lower()
+                                
+                                if selection == 'q':
+                                    print("❌ User cancelled initialization")
+                                    return False
+                                
+                                idx = int(selection) - 1
+                                if 0 <= idx < len(nodes):
+                                    self.node_id = nodes[idx]['node_id']
+                                    print(f"✅ Selected Node ID {self.node_id}")
+                                    
+                                    # Reinitialize CAN manager with selected node ID
+                                    print("🔄 Reinitializing CAN manager with selected node ID...")
+                                    await self.can_manager.shutdown()
+                                    self.can_manager = create_simple_can_manager(node_id=self.node_id)
+                                    if not await self.can_manager.initialize():
+                                        return False
+                                    break
+                                else:
+                                    print(f"❌ Invalid selection. Please enter 1-{len(nodes)}")
+                            except ValueError:
+                                print(f"❌ Invalid input. Please enter 1-{len(nodes)} or 'q'")
+                            except (EOFError, KeyboardInterrupt):
+                                print("\n❌ User cancelled initialization")
+                                return False
+                    else:
+                        # Still no nodes found
+                        print(f"⚠️ Active scan also found no ODrives")
+                        print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
+                        print("💡 Make sure ODrive is powered and CAN bus is connected")
+                        print("💡 If ODrive is present, you can manually specify node ID with --node-id <id>")
             
             print(f"✅ Using node ID: {self.node_id}\n")
             
@@ -1448,12 +1511,15 @@ class HighPerformanceODriveSystem:
         print("   Listening for heartbeat messages (3 seconds)...")
         
         try:
-            discovery = NodeDiscovery(
-                can_channel=self.can_manager.channel,
-                bustype=self.can_manager.bustype
-            )
+            discovery = NodeDiscovery(self.can_manager.bus)
             
             nodes = await discovery.discover_nodes(timeout=3.0)
+            
+            if not nodes:
+                # Try active scan if passive discovery finds nothing
+                print("\n⚠️ No nodes found via heartbeat messages")
+                print("🔍 Attempting active scan (probing all node IDs)...")
+                nodes = await discovery.active_scan_nodes(timeout_per_node=0.2, max_node_id=63)
             
             if nodes:
                 print(f"\n✅ Found {len(nodes)} ODrive node(s):")
@@ -1465,11 +1531,15 @@ class HighPerformanceODriveSystem:
                         3: "FULL_CALIBRATION",
                         8: "CLOSED_LOOP_CONTROL"
                     }
-                    state_name = axis_state_names.get(node['axis_state'], f"STATE_{node['axis_state']}")
                     
                     print(f"  Node ID: {node['node_id']}")
-                    print(f"    Axis State: {state_name} (0x{node['axis_state']:02X})")
-                    print(f"    Axis Error: 0x{node['axis_error']:08X}")
+                    
+                    if node.get('axis_state') is not None:
+                        state_name = axis_state_names.get(node['axis_state'], f"STATE_{node['axis_state']}")
+                        print(f"    Axis State: {state_name} (0x{node['axis_state']:02X})")
+                        print(f"    Axis Error: 0x{node['axis_error']:08X}")
+                    else:
+                        print(f"    Detection: Responds to encoder requests")
                     
                     # Optionally verify with encoder request
                     print(f"    Verifying communication...", end=" ")
@@ -1483,13 +1553,16 @@ class HighPerformanceODriveSystem:
                 print("-" * 60)
                 print(f"💡 Current system is using node ID: {self.node_id}")
             else:
-                print("\n❌ No ODrive nodes detected")
+                print("\n❌ No ODrive nodes detected (passive + active scan)")
                 print("   • Check CAN bus connections")
                 print("   • Verify ODrive is powered on")
-                print("   • Ensure heartbeat is enabled on ODrive")
+                print("   • Verify correct CAN bitrate (usually 250kbps or 500kbps)")
+                print("   • Ensure ODrive is configured for CAN communication")
             
         except Exception as e:
             print(f"\n❌ Scan failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def _show_status(self):
         """Show current system status"""

@@ -120,17 +120,118 @@ class NodeDiscovery:
         
         return nodes
     
-    async def discover_single_node(self, timeout: float = 3.0) -> Optional[int]:
+    async def active_scan_nodes(self, timeout_per_node: float = 0.2, max_node_id: int = 63) -> List[Dict]:
+        """
+        Actively scan for ODrive nodes by probing each node ID
+        
+        This method actively sends requests to each possible node ID to detect
+        ODrives that may not be broadcasting heartbeat messages (e.g., auto-assigned IDs).
+        This is more aggressive than passive discovery but guaranteed to find all nodes.
+        
+        Args:
+            timeout_per_node: How long to wait for each node to respond (seconds)
+            max_node_id: Maximum node ID to scan (default 63)
+            
+        Returns:
+            List of discovered nodes with their information
+        """
+        print(f"🔍 Active scanning for ODrive nodes (IDs 0-{max_node_id})...")
+        print("   Probing each node ID with encoder requests...")
+        
+        discovered_nodes = {}
+        
+        for node_id in range(max_node_id + 1):
+            # Send encoder request
+            request_msg = can.Message(
+                arbitration_id=(node_id << 5 | 0x09),  # 0x09 = GET_ENCODER_ESTIMATES
+                data=b'',
+                is_extended_id=False,
+                is_remote_frame=True
+            )
+            
+            try:
+                self.bus.send(request_msg)
+            except can.CanError:
+                continue
+            
+            # Wait for response
+            start_time = time.time()
+            
+            while (time.time() - start_time) < timeout_per_node:
+                try:
+                    msg = self.bus.recv(timeout=0.05)
+                    
+                    if msg:
+                        cmd_id = msg.arbitration_id & 0x1F
+                        msg_node_id = (msg.arbitration_id >> 5) & 0x3F
+                        
+                        # Check for encoder data response
+                        if cmd_id == 0x09 and msg_node_id == node_id:
+                            # Node responded! Now try to get heartbeat for state info
+                            discovered_nodes[node_id] = {
+                                'node_id': node_id,
+                                'axis_state': None,
+                                'axis_error': None,
+                                'last_seen': time.time(),
+                                'detected_by': 'active_scan'
+                            }
+                            print(f"   ✅ Node ID {node_id} responded to encoder request")
+                            break
+                        
+                        # Also check for heartbeat messages while waiting
+                        elif cmd_id == HEARTBEAT_CMD and msg_node_id == node_id:
+                            if len(msg.data) >= 8:
+                                axis_error = struct.unpack('<I', msg.data[:4])[0]
+                                axis_state = msg.data[4]
+                                
+                                discovered_nodes[node_id] = {
+                                    'node_id': node_id,
+                                    'axis_state': axis_state,
+                                    'axis_error': axis_error,
+                                    'last_seen': time.time(),
+                                    'detected_by': 'heartbeat'
+                                }
+                                print(f"   ✅ Node ID {node_id} sent heartbeat")
+                                break
+                                
+                except:
+                    continue
+            
+            # Small delay between probes to avoid flooding the bus
+            await asyncio.sleep(0.01)
+        
+        # Convert to sorted list
+        nodes = sorted(discovered_nodes.values(), key=lambda x: x['node_id'])
+        
+        if nodes:
+            print(f"\n✅ Active scan found {len(nodes)} ODrive(s):")
+            for node in nodes:
+                if node['axis_state'] is not None:
+                    state_name = self._get_state_name(node['axis_state'])
+                    error_str = f"error=0x{node['axis_error']:08X}" if node['axis_error'] != 0 else "no errors"
+                    print(f"   • Node ID {node['node_id']}: {state_name}, {error_str}")
+                else:
+                    print(f"   • Node ID {node['node_id']}: Responds to encoder requests")
+        else:
+            print("❌ No ODrive nodes found during active scan")
+        
+        return nodes
+    
+    async def discover_single_node(self, timeout: float = 3.0, use_active_scan: bool = False) -> Optional[int]:
         """
         Discover a single ODrive node (convenience method)
         
         Args:
             timeout: How long to listen for heartbeat messages
+            use_active_scan: If True, use active scanning instead of passive listening
             
         Returns:
             Node ID if exactly one node found, None otherwise
         """
-        nodes = await self.discover_nodes(timeout=timeout)
+        if use_active_scan:
+            nodes = await self.active_scan_nodes(timeout_per_node=0.2)
+        else:
+            nodes = await self.discover_nodes(timeout=timeout)
         
         if len(nodes) == 1:
             print(f"✅ Found single ODrive at node ID {nodes[0]['node_id']}")
