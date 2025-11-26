@@ -94,7 +94,7 @@ class ODriveGUI(QMainWindow):
         
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("ODrive Control System v1.1.0")
+        self.setWindowTitle("Neon's ODrive Control System v1.1.0")
         self.setGeometry(100, 100, 1200, 800)
         
         # Central widget
