@@ -713,6 +713,11 @@ class ODriveGUI(QMainWindow):
             self.log_to_console("🔍 Scanning for ODrive nodes...")
             
             # Perform node discovery first
+            # Import from parent directory since GUI is in subdirectory
+            parent_path = str(Path(__file__).parent.parent)
+            if parent_path not in sys.path:
+                sys.path.insert(0, parent_path)
+            
             from modules.simple_can_manager import create_simple_can_manager
             from utils.node_discovery import NodeDiscovery
             
