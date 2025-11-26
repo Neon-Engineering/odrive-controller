@@ -748,20 +748,54 @@ class HighPerformanceODriveSystem:
                             return False
                             
                 elif len(nodes) == 0:
-                    # No ODrives found - fall back to default node ID
+                    # No ODrives found - check if unaddressed devices exist
                     print(f"⚠️ No addressed ODrives discovered via enumeration protocol")
+                    
                     if unaddressed:
-                        print(f"⚠️ Found {len(unaddressed)} unaddressed ODrive(s):")
+                        print(f"\n⚠️ Found {len(unaddressed)} unaddressed ODrive(s):")
                         for device in unaddressed:
                             print(f"   • S/N {device['serial_number_str']}")
-                        print("💡 These ODrives need node IDs assigned first")
-                        print("💡 Use 'odrivetool' or ODrive GUI to configure node IDs")
-                    print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
-                    print("💡 Possible issues:")
-                    print("   • ODrive not powered on")
-                    print("   • CAN bus not connected properly")
-                    print("   • Wrong CAN bitrate")
-                    print("💡 You can manually specify node ID with --node-id <id>")
+                        print("\n💡 These ODrives need node IDs assigned before they can be controlled.")
+                        print("💡 You can assign a node ID now using the 'assign' command in interactive mode,")
+                        print("   or connect via USB and use 'odrivetool' to configure permanently.")
+                        
+                        try:
+                            response = input("\nWould you like to assign a node ID now? (y/n): ").strip().lower()
+                            if response == 'y':
+                                # Temporarily set up for assignment
+                                temp_system = HighPerformanceODriveSystem(node_id=0)
+                                if await temp_system.initialize(auto_discover=False):
+                                    # Run assignment
+                                    print("\n" + "="*60)
+                                    await temp_system._assign_node_id()
+                                    print("="*60 + "\n")
+                                    
+                                    # Re-enumerate to check if assignment worked
+                                    print("🔍 Re-enumerating to verify assignment...")
+                                    nodes, unaddressed = await discovery.enumerate_odrives(timeout=2.0)
+                                    
+                                    if len(nodes) == 1:
+                                        self.node_id = nodes[0]['node_id']
+                                        print(f"✅ Assignment successful! Using node ID {self.node_id}")
+                                    else:
+                                        print("⚠️ Assignment may have failed or not yet visible")
+                                        print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
+                                    
+                                    await temp_system.shutdown()
+                                else:
+                                    print("❌ Failed to initialize for assignment")
+                                    print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
+                            else:
+                                print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
+                        except (EOFError, KeyboardInterrupt):
+                            print(f"\n⚠️ FALLING BACK to default node ID: {self.node_id}")
+                    else:
+                        print(f"⚠️ FALLING BACK to default node ID: {self.node_id}")
+                        print("💡 Possible issues:")
+                        print("   • ODrive not powered on")
+                        print("   • CAN bus not connected properly")
+                        print("   • Wrong CAN bitrate")
+                        print("💡 You can manually specify node ID with --node-id <id>")
             
             print(f"✅ Using node ID: {self.node_id}\n")
             

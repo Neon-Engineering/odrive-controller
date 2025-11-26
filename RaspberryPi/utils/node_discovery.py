@@ -143,11 +143,13 @@ class NodeDiscovery:
             # Send discovery request
             self._send_discovery_request()
             
-            # Listen for responses with async sleep to avoid blocking
+            # Listen for responses - run bus.recv in executor to avoid blocking
             listen_start = time.time()
             while (time.time() - listen_start) < DISCOVERY_MESSAGE_INTERVAL:
                 try:
-                    msg = self.bus.recv(timeout=0.01)  # Very short timeout to avoid blocking
+                    # Run blocking recv in thread executor to prevent blocking event loop
+                    loop = asyncio.get_event_loop()
+                    msg = await loop.run_in_executor(None, lambda: self.bus.recv(timeout=0.01))
                     
                     if msg:
                         result = self._parse_discovery_response(msg)
