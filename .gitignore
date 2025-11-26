@@ -208,3 +208,4 @@ __marimo__/
 
 # Local venv zip
 .venv.zip
+chat.json
