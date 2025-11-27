@@ -1,5 +1,5 @@
 # Software version tracking
-SOFTWARE_VERSION = "1.1.0"
+SOFTWARE_VERSION = "1.2.0"  # Added official ODrive enumeration, node ID discovery, and CAN-based assignment
 SOFTWARE_NAME = "ODrive High-Performance CAN Control System"
 
 import argparse
